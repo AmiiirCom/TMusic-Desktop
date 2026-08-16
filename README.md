@@ -1,0 +1,168 @@
+# 🎵 TMusic Desktop
+
+<div align="center">
+
+**A native, fast, and secure Telegram Music Player Desktop Client built with Python, PySide6 (Qt 6), and TDLib.**
+
+[English](#english) • [فارسی](#فارسی)
+
+---
+
+</div>
+
+<a name="english"></a>
+## 🇬🇧 English
+
+**TMusic** is a lightweight, modern desktop music player designed specifically for Telegram. It connects directly to your Telegram account using the official Telegram Database Library (TDLib), scans channels and supergroups you own, extracts audio tracks, and streams/downloads them seamlessly with an interface modeled after **Telegram Desktop**.
+
+---
+
+### ✨ Key Features
+
+- **🔐 Native Telegram Authentication:** Complete auth flow supporting Phone Number, Verification Code, and 2FA Cloud Password.
+- **📡 Automatic Channel Discovery:** Deep scanning and discovery of channels and supergroups created/owned by the user.
+- **🎵 Music Extraction & Library:** High-performance detection of native Telegram audio and audio documents (.mp3, .flac, .m4a, .wav, etc.) without pre-downloading heavy files.
+- **⚡ Download While Playing & Smart Cache:** Progressive download in background while streaming; cached tracks play instantly on subsequent plays without redownloading.
+- **🛡️ Enterprise-Grade Security:** Settings and credentials encrypted at rest using **AES-256-GCM** with OS-protected master key storage (**Windows DPAPI**).
+- **🌐 Built-in Proxy Support:** Immediate SOCKS5 and HTTP proxy configuration with auto-reconnect on startup.
+- **🎨 Telegram Desktop Aesthetic:** Clean dark theme, rounded badges, custom slim scrollbars, and active playing equalizer highlights.
+- **🎛️ System Tray Integration:** Minimize/Close to system tray with background playback and mini-tray controls (Play/Pause/Next/Prev).
+- **📊 Real-time Network Usage Meter:** Live download speed (KB/s, MB/s) and session bandwidth tracker.
+- **🇮🇷 Persian Typography & RTL:** Native RTL layout with auto-loaded **Vazirmatn** Persian typography.
+
+---
+
+### 🛠️ Tech Stack & Architecture
+
+- **Language:** Python 3.13 / 3.14
+- **GUI Framework:** PySide6 (Qt 6.8+)
+- **Audio Backend:** QtMultimedia (FFmpeg engine)
+- **Telegram Engine:** TDLib (Telegram Database Library via FFI JSON Client)
+- **Cryptography:** AES-256-GCM (cryptography)
+- **Testing:** pytest, pytest-qt
+- **Packaging:** PyInstaller
+
+---
+
+### 🚀 Getting Started
+
+#### 1. Prerequisites
+- Python 3.13+ installed
+- Telegram api_id and api_hash from my.telegram.org
+- TDLib binary (tdjson.dll on Windows / libtdjson.so on Linux / libtdjson.dylib on macOS)
+
+#### 2. Installation
+```bash
+git clone https://github.com/YourUsername/TMusic-Desktop.git
+cd TMusic-Desktop
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+```
+
+#### 3. Setup TDLib Binary
+Place `tdjson.dll` inside the `native/` folder.
+
+#### 4. Configure Credentials (.env)
+Create a `.env` file in the root directory:
+```env
+TMUSIC_API_ID=12345678
+TMUSIC_API_HASH=abcdef1234567890abcdef1234567890
+```
+
+#### 5. Run the Application
+```bash
+python -m app.main
+```
+
+---
+
+### 🧪 Running Tests
+```bash
+pytest -v
+```
+
+---
+
+### 📦 Building Standalone Executable (.EXE)
+```bash
+python scripts/generate_icons.py
+python scripts/build.py
+```
+The compiled standalone executable will be ready in `dist/TMusic/TMusic.exe`.
+
+---
+
+<a name="فارسی"></a>
+## 🇮🇷 فارسی
+
+**تی‌موزیک (TMusic)** یک موزیک پلیر دسکتاپ بومی، سریع و امن برای تلگرام است که با زبان **پایتون**، فریم‌ورک **PySide6 (Qt 6)** و کتابخانه رسمی **TDLib** توسعه یافته است. این برنامه به حساب تلگرام شما متصل شده، کانال‌های موزیکی که سازنده آن‌ها هستید را شناسایی کرده و آهنگ‌ها را با ظاهری بسیار نزدیک به **تلگرام دسکتاپ** استریم و دانلود می‌کند.
+
+---
+
+### ✨ قابلیت‌های کلیدی
+
+- **🔐 ورود امن به تلگرام:** پشتیبانی کامل از احراز هویت با شماره موبایل، کد تایید و رمز دومرحله‌ای (2FA).
+- **📡 اسکن خودکار کانال‌های تحت مالکیت:** شناسایی و بارگذاری کانال‌ها و سوپرگروه‌های ساخته‌شده توسط کاربر.
+- **🎵 استخراج هوشمند موزیک‌ها:** شناسایی آنی آهنگ‌ها و فایل‌های صوتی (.mp3, .flac, .m4a و...) بدون نیاز به دانلود کل فایل برای گرفتن مشخصات.
+- **⚡ دانلود هنگام پخش و سیستم کش هوشمند:** دانلود خودکار در پس‌زمینه همزمان با پخش موزیک؛ آهنگ‌های دانلودشده برای دفعات بعدی بدون مصرف اینترنت پخش می‌شوند.
+- **🛡️ امنیت و رمزنگاری داده‌ها:** رمزنگاری تنظیمات و پروکسی با الگوریتم **AES-256-GCM** و محافظت از کلید مادر با **Windows DPAPI**.
+- **🌐 پشتیبانی داخلی از پروکسی:** تنظیم و اتصال به پروکسی‌های SOCKS5 و HTTP با قابلیت اتصال خودکار در استارت‌آپ.
+- **🎨 طراحی به سبک تلگرام دسکتاپ:** تم تاریک، اسکرول‌بارهای باریک و اختصاصی تلگرام، و هایلایت خودکار ترک در حال پخش.
+- **🎛️ پشتیبانی از System Tray:** ادامه‌ی پخش موزیک در پس‌زمینه با بستن پنجره و امکان کنترل پخش از کنار ساعت ویندوز.
+- **📊 مانیتور مصرف اینترنت:** نمایش لحظه‌ای سرعت دانلود (KB/s, MB/s) و حجم مصرف‌شده سشن.
+- **🇮🇷 پشتیبانی کامل از زبان فارسی:** چینش کاملاً راست‌به‌چپ (RTL) همراه با لود خودکار فونت زیبا و رسمی **وزیرمتن**.
+
+---
+
+### 🚀 راهنمای راه‌اندازی و اجرا
+
+#### ۱. پیش‌نیازها
+- پایتون نسخه ۳.۱۳ یا جدیدتر
+- دریافت api_id و api_hash از my.telegram.org
+- باینری tdjson.dll
+
+#### ۲. نصب و راه‌اندازی
+```bash
+git clone https://github.com/YourUsername/TMusic-Desktop.git
+cd TMusic-Desktop
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+```
+
+#### ۳. قرار دادن فایل باینری TDLib
+فایل `tdjson.dll` را داخل پوشه `native/` در ریشه پروژه قرار دهید.
+
+#### ۴. تنظیم متغیرهای تلگرام (.env)
+یک فایل به نام `.env` در پوشه اصلی پروژه ایجاد کرده و مقادیر دریافتی از سایت تلگرام را وارد کنید:
+```env
+TMUSIC_API_ID=12345678
+TMUSIC_API_HASH=abcdef1234567890abcdef1234567890
+```
+
+#### ۵. اجرای برنامه
+```bash
+python -m app.main
+```
+
+---
+
+### 🧪 اجرای آزمون‌های خودکار
+```bash
+pytest -v
+```
+
+---
+
+### 📦 ساخت خروجی اجرایی مستقل (EXE)
+```bash
+python scripts/generate_icons.py
+python scripts/build.py
+```
+خروجی نهایی و فایل اجرایی در مسیر `dist/TMusic/TMusic.exe` ساخته خواهد شد.
+
+---
+
+### 📄 شرایط استفاده و لایسنس
+این پروژه تحت لایسنس MIT منتشر شده است. استفاده از سرویس‌های تلگرام مطابق با شرایط استفاده از API تلگرام انجام می‌پذیرد.
