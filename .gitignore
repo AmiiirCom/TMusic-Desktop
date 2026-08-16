@@ -1,0 +1,50 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# TDLib & Telegram Data (CRITICAL)
+tdlib_data/
+tdlib_log/
+*.session
+*.db
+*.sqlite
+*.sqlite3
+
+# Local Cache & Media
+media_cache/
+downloads/
+*.tmp
+log
+*.log
+log.txt
+data/
+
+# Secrets & Config
+.env
+*.local.json
+secrets/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+
+# AI
+Agent.md
+TMusic.spec
