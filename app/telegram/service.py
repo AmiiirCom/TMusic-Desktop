@@ -1,3 +1,4 @@
+import base64
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
@@ -44,7 +45,7 @@ class ChatTrackPaginationState:
 
 
 class TelegramService(QObject):
-    """High-speed Telegram service with robust auth guards and lazy track loading."""
+    """High-speed Telegram service with HD cover artwork streaming and lazy track loading."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -56,6 +57,7 @@ class TelegramService(QObject):
 
     tracks_loaded = Signal(object, list, bool)
     tracks_appended = Signal(object, list, bool)
+    cover_downloaded = Signal(str, str)  # (track_id, cover_local_path)
 
     file_download_progress = Signal(int, int, int)
     file_download_completed = Signal(int, str)
@@ -84,6 +86,9 @@ class TelegramService(QObject):
         self._downloading_files: set[int] = set()
         self._file_id_to_path: dict[int, str] = {}
 
+        # Cover files mapping: cover_file_id -> track_id
+        self._cover_file_to_track_id: dict[int, str] = {}
+
         # Per-chat Track Pagination state
         self._track_pagination: dict[int, ChatTrackPaginationState] = {}
 
@@ -95,11 +100,14 @@ class TelegramService(QObject):
     def current_user(self) -> TelegramUser | None:
         return self._current_user
 
+    @property
+    def current_auth_state(self) -> AuthState:
+        return self._auth_state
+
     def set_settings_service(self, settings_service: SettingsService) -> None:
         self._settings = settings_service
 
     def load_cached_music_chats(self) -> None:
-        """Instantly emit cached music channels to UI."""
         if self._settings:
             cached = self._settings.get_cached_music_chats()
             if cached:
@@ -115,7 +123,6 @@ class TelegramService(QObject):
         return None
 
     def _is_music_chat_title(self, title: str) -> bool:
-        """Robust Persian & English music keyword matching."""
         if not title:
             return False
 
@@ -473,6 +480,26 @@ class TelegramService(QObject):
             "synchronous": False,
         })
 
+    def download_cover(self, track_id: str, file_id: int) -> None:
+        """Download high-resolution album cover thumbnail with low priority."""
+        if not file_id:
+            return
+
+        self._cover_file_to_track_id[file_id] = track_id
+
+        if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
+            self.cover_downloaded.emit(track_id, self._file_id_to_path[file_id])
+            return
+
+        self._adapter.send({
+            "@type": "downloadFile",
+            "file_id": file_id,
+            "priority": 4,  # Light priority so audio streams stay faster
+            "offset": 0,
+            "limit": 0,
+            "synchronous": False,
+        })
+
     def _process_file_update(self, file_obj: dict[str, Any]) -> None:
         file_id = file_obj.get("id", 0)
         local = file_obj.get("local", {})
@@ -483,17 +510,24 @@ class TelegramService(QObject):
 
         if is_completed and path:
             self._file_id_to_path[file_id] = path
+
+            # 1. Check if this is an HD album cover
+            track_id = self._cover_file_to_track_id.get(file_id)
+            if track_id:
+                self.cover_downloaded.emit(track_id, path)
+
+            # 2. Check if this is an audio track
             if file_id in self._downloading_files:
                 self._downloading_files.discard(file_id)
-            logger.info("File ID %d download completed! Path: %s", file_id, path)
-            self.file_download_completed.emit(file_id, path)
+                logger.info("File ID %d download completed! Path: %s", file_id, path)
+                self.file_download_completed.emit(file_id, path)
+
         elif local.get("is_downloading_active", False):
             self.file_download_progress.emit(file_id, downloaded, total)
 
-    # --- Chunked Lazy Music Loading (Infinite Scrolling) ---
+    # --- Chunked Lazy Music Loading with HD Cover Extraction ---
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
-        """Load first chunk or subsequent lazy chunk of music tracks."""
         if reset or chat_id not in self._track_pagination:
             state = ChatTrackPaginationState(chat_id=chat_id)
             self._track_pagination[chat_id] = state
@@ -524,7 +558,6 @@ class TelegramService(QObject):
         })
 
     def load_more_tracks(self, chat_id: int) -> None:
-        """Called when user scrolls to bottom of track list."""
         self.load_chat_tracks(chat_id, reset=False)
 
     def _process_chat_audio_messages(
@@ -543,6 +576,9 @@ class TelegramService(QObject):
         for msg in messages:
             content = msg.get("content", {})
             content_type = content.get("@type", "")
+            msg_date = msg.get("date", 0)
+            msg_id = msg.get("id", 0)
+            track_id = f"{chat_id}_{msg_id}"
 
             if content_type == "messageAudio":
                 audio = content.get("audio", {})
@@ -551,13 +587,35 @@ class TelegramService(QObject):
                 file_id = file_obj.get("id", 0)
                 path = local_file.get("path", "")
 
+                # 1. Preview minithumbnail (Instant low-res)
+                minithumb = audio.get("album_cover_minithumbnail")
+                minithumb_data: bytes | None = None
+                if minithumb and "data" in minithumb:
+                    try:
+                        minithumb_data = base64.b64decode(minithumb["data"])
+                    except Exception:
+                        minithumb_data = None
+
+                # 2. HD Album Cover Thumbnail File (300x300+ Sharp)
+                hd_thumb = audio.get("album_cover_thumbnail") or audio.get("thumbnail")
+                cover_file_id = 0
+                cover_path = None
+                if hd_thumb:
+                    c_file = hd_thumb.get("file", {})
+                    cover_file_id = c_file.get("id", 0)
+                    c_local = c_file.get("local", {})
+                    if c_local.get("is_downloading_completed") and c_local.get("path"):
+                        cover_path = c_local.get("path")
+                    elif cover_file_id > 0:
+                        self.download_cover(track_id, cover_file_id)
+
                 if local_file.get("is_downloading_completed") and path:
                     self._file_id_to_path[file_id] = path
 
                 track = Track(
-                    id=f"{chat_id}_{msg.get('id', 0)}",
+                    id=track_id,
                     chat_id=chat_id,
-                    message_id=msg.get("id", 0),
+                    message_id=msg_id,
                     file_id=file_id,
                     title=audio.get("title", ""),
                     artist=audio.get("performer", ""),
@@ -567,6 +625,10 @@ class TelegramService(QObject):
                     mime_type=audio.get("mime_type", "audio/mpeg"),
                     local_path=path if (local_file.get("is_downloading_completed") and Path(path).exists()) else None,
                     is_downloaded=local_file.get("is_downloading_completed", False),
+                    date_timestamp=msg_date,
+                    minithumbnail_data=minithumb_data,
+                    cover_file_id=cover_file_id,
+                    cover_path=cover_path,
                 )
                 chunk_tracks.append(track)
 
@@ -582,13 +644,33 @@ class TelegramService(QObject):
                     file_id = file_obj.get("id", 0)
                     path = local_file.get("path", "")
 
+                    minithumb = doc.get("minithumbnail")
+                    minithumb_data = None
+                    if minithumb and "data" in minithumb:
+                        try:
+                            minithumb_data = base64.b64decode(minithumb["data"])
+                        except Exception:
+                            minithumb_data = None
+
+                    hd_thumb = doc.get("thumbnail")
+                    cover_file_id = 0
+                    cover_path = None
+                    if hd_thumb:
+                        c_file = hd_thumb.get("file", {})
+                        cover_file_id = c_file.get("id", 0)
+                        c_local = c_file.get("local", {})
+                        if c_local.get("is_downloading_completed") and c_local.get("path"):
+                            cover_path = c_local.get("path")
+                        elif cover_file_id > 0:
+                            self.download_cover(track_id, cover_file_id)
+
                     if local_file.get("is_downloading_completed") and path:
                         self._file_id_to_path[file_id] = path
 
                     track = Track(
-                        id=f"{chat_id}_{msg.get('id', 0)}",
+                        id=track_id,
                         chat_id=chat_id,
-                        message_id=msg.get("id", 0),
+                        message_id=msg_id,
                         file_id=file_id,
                         title=file_name,
                         artist="Audio File",
@@ -598,8 +680,12 @@ class TelegramService(QObject):
                         mime_type=mime_type or "audio/mpeg",
                         local_path=path if (local_file.get("is_downloading_completed") and Path(path).exists()) else None,
                         is_downloaded=local_file.get("is_downloading_completed", False),
+                        date_timestamp=msg_date,
+                        minithumbnail_data=minithumb_data,
+                        cover_file_id=cover_file_id,
+                        cover_path=cover_path,
                     )
-                    tracks.append(track)
+                    chunk_tracks.append(track)
 
         if is_initial:
             state.tracks = list(chunk_tracks)

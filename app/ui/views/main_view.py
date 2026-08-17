@@ -229,3 +229,8 @@ class MainView(QWidget):
 
     def _on_search_text_changed(self, text: str) -> None:
         self.track_list.filter_tracks(text)
+        
+    def update_track_cover(self, track_id: str, cover_path: str) -> None:
+            self.track_list.update_track_cover(track_id, cover_path)
+            if self.player_bar._current_track and self.player_bar._current_track.id == track_id:
+                self.player_bar.update_cover(cover_path)

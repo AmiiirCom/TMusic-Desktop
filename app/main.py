@@ -106,9 +106,15 @@ class MainWindow(QMainWindow):
         self._telegram.owned_chats_loaded.connect(self._main_view.set_owned_chats)
         self._telegram.tracks_loaded.connect(self._on_initial_tracks_loaded)
         self._telegram.tracks_appended.connect(self._on_tracks_appended)
+        
+        self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
         # Emit cached music channels immediately
         self._telegram.load_cached_music_chats()
+
+        # Check if already authenticated on init
+        if self._telegram.current_auth_state == AuthState.READY:
+            self._central_stack.setCurrentWidget(self._main_view)
 
         # Apply saved proxy automatically on launch
         self._apply_saved_proxy()
@@ -183,6 +189,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_auth_state_changed(self, state: str) -> None:
+        logger.info("Main window reacting to auth state: %s", state)
         match state:
             case AuthState.WAIT_PHONE_NUMBER:
                 self._central_stack.setCurrentWidget(self._login_view)

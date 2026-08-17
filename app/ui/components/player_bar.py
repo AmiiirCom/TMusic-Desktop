@@ -1,4 +1,6 @@
+from pathlib import Path
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,19 +14,79 @@ from PySide6.QtWidgets import (
 from app.models.track import Track
 
 
+def create_playerbar_cover_pixmap(
+    minithumb_data: bytes | None = None,
+    cover_path: str | None = None,
+    size: int = 48,
+) -> QPixmap:
+    """Render high-resolution album cover for bottom player bar."""
+    target = QPixmap(size, size)
+    target.fill(QColor(0, 0, 0, 0))
+
+    painter = QPainter(target)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+    path = QPainterPath()
+    path.addRoundedRect(0, 0, size, size, 8, 8)
+    painter.setClipPath(path)
+
+    has_drawn = False
+
+    # 1. Prefer HD cover file
+    if cover_path and Path(cover_path).exists():
+        src = QPixmap(str(cover_path))
+        if not src.isNull():
+            scaled = src.scaled(
+                size,
+                size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (scaled.width() - size) // 2
+            y = (scaled.height() - size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
+            has_drawn = True
+
+    # 2. Preview minithumbnail
+    if not has_drawn and minithumb_data:
+        src = QPixmap()
+        if src.loadFromData(minithumb_data):
+            scaled = src.scaled(
+                size,
+                size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (scaled.width() - size) // 2
+            y = (scaled.height() - size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
+            has_drawn = True
+
+    # 3. Default fallback
+    if not has_drawn:
+        painter.fillRect(0, 0, size, size, QColor("#2b5278"))
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(target.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
+
+    painter.end()
+    return target
+
+
 class PlayerBar(QFrame):
-    """Telegram Desktop styled bottom audio player bar."""
+    """Telegram Desktop styled bottom audio player bar with HD artwork cover."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
     previous_clicked = Signal()
-    seek_requested = Signal(int)  # ms
-    volume_changed = Signal(int)  # 0 - 100
+    seek_requested = Signal(int)
+    volume_changed = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedHeight(84)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self._current_track: Track | None = None
         self._is_slider_dragging = False
         self._duration_ms = 0
         self._init_ui()
@@ -37,7 +99,7 @@ class PlayerBar(QFrame):
             }
             QLabel {
                 color: #ffffff;
-                font-family: 'Segoe UI', 'Vazirmatn', sans-serif;
+                font-family: 'Vazirmatn', 'Segoe UI', sans-serif;
             }
             QPushButton {
                 background: transparent;
@@ -83,23 +145,16 @@ class PlayerBar(QFrame):
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(16)
 
-        # 1. Left Section: Track Artwork & Info
+        # 1. Left Section: Track Artwork Cover & Info
         info_container = QWidget(self)
-        info_container.setFixedWidth(240)
+        info_container.setFixedWidth(260)
         info_layout = QHBoxLayout(info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(12)
 
-        self.artwork_badge = QLabel("🎵")
-        self.artwork_badge.setFixedSize(44, 44)
-        self.artwork_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.artwork_badge.setStyleSheet("""
-            QLabel {
-                background-color: #2b5278;
-                border-radius: 8px;
-                font-size: 18px;
-            }
-        """)
+        self.artwork_badge = QLabel()
+        self.artwork_badge.setFixedSize(48, 48)
+        self.artwork_badge.setPixmap(create_playerbar_cover_pixmap(size=48))
 
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
@@ -125,7 +180,6 @@ class PlayerBar(QFrame):
         center_layout.setSpacing(4)
         center_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Controls Buttons
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(12)
         controls_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -191,9 +245,20 @@ class PlayerBar(QFrame):
         layout.addWidget(vol_container)
 
     def set_track(self, track: Track) -> None:
+        self._current_track = track
         self.title_label.setText(track.display_title)
         self.artist_label.setText(track.display_artist)
         self.dur_label.setText(track.formatted_duration)
+        self.update_cover(track.cover_path)
+
+    def update_cover(self, cover_path: str | None) -> None:
+        if self._current_track:
+            pixmap = create_playerbar_cover_pixmap(
+                minithumb_data=self._current_track.minithumbnail_data,
+                cover_path=cover_path or self._current_track.cover_path,
+                size=48,
+            )
+            self.artwork_badge.setPixmap(pixmap)
 
     def set_playback_state(self, is_playing: bool) -> None:
         self.btn_play_pause.setText("⏸" if is_playing else "▶")
@@ -203,7 +268,6 @@ class PlayerBar(QFrame):
             val = int((position_ms / self._duration_ms) * 1000)
             self.slider.setValue(val)
 
-        # Format MM:SS
         sec = position_ms // 1000
         self.pos_label.setText(f"{sec // 60:02d}:{sec % 60:02d}")
 
