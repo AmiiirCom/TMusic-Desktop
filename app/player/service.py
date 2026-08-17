@@ -34,7 +34,7 @@ class PlayerService(QObject):
         self._current_index: int = -1
         self._current_track: Track | None = None
         self._pending_track: Track | None = None
-        self._cached_paths: dict[int, str] = {}  # file_id -> local_path
+        self._cached_paths: dict[int, str] = {}
 
         # Wire Qt Multimedia signals
         self._player.positionChanged.connect(self.position_changed.emit)
@@ -61,6 +61,14 @@ class PlayerService(QObject):
         elif self._current_track:
             self._update_current_index(self._current_track.id)
 
+    def append_to_playlist(self, new_tracks: list[Track]) -> None:
+        """Append newly lazy-loaded tracks to active playback queue."""
+        existing_ids = {t.id for t in self._playlist}
+        unique_new = [t for t in new_tracks if t.id not in existing_ids]
+        self._playlist.extend(unique_new)
+        if self._current_track:
+            self._update_current_index(self._current_track.id)
+
     def _update_current_index(self, track_id: str) -> None:
         for idx, t in enumerate(self._playlist):
             if t.id == track_id:
@@ -68,12 +76,10 @@ class PlayerService(QObject):
                 return
 
     def play_track(self, track: Track) -> None:
-        """Play track directly if cached, otherwise download and play."""
         self._current_track = track
         self._update_current_index(track.id)
         self.track_changed.emit(track)
 
-        # 1. Check if we already have the local path cached
         cached_path = (
             self._cached_paths.get(track.file_id)
             or self._telegram.get_downloaded_path(track.file_id)
@@ -85,7 +91,6 @@ class PlayerService(QObject):
             self._start_playback(cached_path)
             return
 
-        # 2. File needs downloading
         logger.info("Track '%s' not cached. Requesting TDLib download...", track.display_title)
         self._pending_track = track
         self._telegram.download_file(track.file_id)

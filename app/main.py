@@ -62,6 +62,7 @@ class MainWindow(QMainWindow):
         self._main_view = MainView(self)
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
+        self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
         self._main_view.logout_requested.connect(self._telegram.log_out)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
 
@@ -103,9 +104,10 @@ class MainWindow(QMainWindow):
         self._telegram.connection_state_changed.connect(self._login_view.set_connection_status)
         self._telegram.user_loaded.connect(self._main_view.set_user)
         self._telegram.owned_chats_loaded.connect(self._main_view.set_owned_chats)
-        self._telegram.tracks_loaded.connect(self._on_tracks_loaded)
+        self._telegram.tracks_loaded.connect(self._on_initial_tracks_loaded)
+        self._telegram.tracks_appended.connect(self._on_tracks_appended)
 
-        # Emit cached music channels immediately after signal connection
+        # Emit cached music channels immediately
         self._telegram.load_cached_music_chats()
 
         # Apply saved proxy automatically on launch
@@ -161,14 +163,19 @@ class MainWindow(QMainWindow):
 
     @Slot(OwnedChat)
     def _on_chat_selected(self, chat: OwnedChat) -> None:
-        logger.info("User selected chat: %s (ID: %d). Loading tracks...", chat.title, chat.id)
+        logger.info("User selected chat: %s (ID: %d). Loading initial tracks chunk...", chat.title, chat.id)
         self._settings.set_last_chat(chat.id)
-        self._telegram.load_chat_tracks(chat.id, limit=100)
+        self._telegram.load_chat_tracks(chat.id, reset=True, chunk_size=40)
 
-    @Slot(object, list)
-    def _on_tracks_loaded(self, chat_id: int, tracks: list[Track]) -> None:
-        self._main_view.set_tracks(tracks)
+    @Slot(object, list, bool)
+    def _on_initial_tracks_loaded(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
+        self._main_view.set_initial_tracks(tracks, has_more=has_more)
         self._player.set_playlist(tracks)
+
+    @Slot(object, list, bool)
+    def _on_tracks_appended(self, chat_id: int, new_tracks: list[Track], has_more: bool) -> None:
+        self._main_view.append_tracks(new_tracks, has_more=has_more)
+        self._player.append_to_playlist(new_tracks)
 
     @Slot(Track)
     def _on_track_selected(self, track: Track) -> None:

@@ -26,7 +26,6 @@ class TrackItemWidget(QWidget):
         layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(14)
 
-        # Icon badge (Blue by default, Green/Wave when active)
         icon_text = "🔊" if self._is_active else "▶"
         icon_bg = "#4fae4e" if self._is_active else "#2481cc"
 
@@ -43,7 +42,6 @@ class TrackItemWidget(QWidget):
             }}
         """)
 
-        # Title & Artist
         info_layout = QVBoxLayout()
         info_layout.setSpacing(2)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -58,7 +56,6 @@ class TrackItemWidget(QWidget):
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.artist_label)
 
-        # Duration & Size (Left side in RTL)
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
@@ -81,9 +78,10 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget holding the tracks with live playing indicators."""
+    """List widget holding the tracks with live playing indicators and infinite scroll."""
 
     track_selected = Signal(Track)
+    load_more_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -91,6 +89,8 @@ class TrackListWidget(QListWidget):
         self._all_tracks: list[Track] = []
         self._active_track_id: str | None = None
         self._current_query: str = ""
+        self._has_more: bool = True
+        self._is_loading_more: bool = False
 
         self.setStyleSheet("""
             QListWidget {
@@ -112,13 +112,39 @@ class TrackListWidget(QListWidget):
         self.itemDoubleClicked.connect(self._on_item_clicked)
         self.itemClicked.connect(self._on_item_clicked)
 
-    def set_tracks(self, tracks: list[Track]) -> None:
-        self._all_tracks = tracks
-        self._populate(tracks)
+        # Detect infinite scrolling
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+    def set_tracks(self, tracks: list[Track], has_more: bool = True) -> None:
+        """Reset and load initial chunk of tracks."""
+        self._all_tracks = list(tracks)
+        self._has_more = has_more
+        self._is_loading_more = False
+        self._populate(self._all_tracks)
+
+    def append_tracks(self, new_tracks: list[Track], has_more: bool = True) -> None:
+        """Append lazy chunk of tracks smoothly without resetting scroll position."""
+        self._has_more = has_more
+        self._is_loading_more = False
+
+        # Add only unique tracks
+        existing_ids = {t.id for t in self._all_tracks}
+        unique_new = [t for t in new_tracks if t.id not in existing_ids]
+        self._all_tracks.extend(unique_new)
+
+        if not self._current_query:
+            for track in unique_new:
+                item = QListWidgetItem(self)
+                is_active = (track.id == self._active_track_id)
+                widget = TrackItemWidget(track, is_active=is_active)
+                item.setSizeHint(widget.sizeHint())
+                self.addItem(item)
+                self.setItemWidget(item, widget)
+        else:
+            self.filter_tracks(self._current_query)
 
     def set_active_track(self, track: Track | None) -> None:
         self._active_track_id = track.id if track else None
-        # Refresh current visible list to update highlights
         self.filter_tracks(self._current_query)
 
     def filter_tracks(self, query: str) -> None:
@@ -144,6 +170,14 @@ class TrackListWidget(QListWidget):
             item.setSizeHint(widget.sizeHint())
             self.addItem(item)
             self.setItemWidget(item, widget)
+
+    def _on_scroll(self, value: int) -> None:
+        """Trigger lazy loading when scrolling reaches near bottom."""
+        max_val = self.verticalScrollBar().maximum()
+        # If user scrolled within 30px of bottom, request next chunk
+        if (max_val - value <= 30) and self._has_more and not self._is_loading_more and not self._current_query:
+            self._is_loading_more = True
+            self.load_more_requested.emit()
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         widget = self.itemWidget(item)

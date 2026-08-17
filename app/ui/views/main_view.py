@@ -20,10 +20,11 @@ from app.ui.components.track_list_widget import TrackListWidget
 
 
 class MainView(QWidget):
-    """Telegram Desktop styled main dashboard view with live music library & player."""
+    """Telegram Desktop styled main dashboard view with lazy-loaded music library & player."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
+    load_more_tracks_requested = Signal(object)  # chat_id
     logout_requested = Signal()
     settings_requested = Signal()
 
@@ -40,7 +41,7 @@ class MainView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        # 1. Sidebar Container (Right side in RTL)
+        # 1. Sidebar Container
         sidebar = QWidget(self)
         sidebar.setFixedWidth(300)
         sidebar.setStyleSheet("background-color: #17212b; border-left: 1px solid #0e1621;")
@@ -118,14 +119,14 @@ class MainView(QWidget):
         stats_layout.addWidget(self.net_stats_label)
         sidebar_layout.addWidget(stats_bar)
 
-        # 2. Main Content Area (Left side in RTL)
+        # 2. Main Content Area
         content_area = QWidget(self)
         content_area.setStyleSheet("background-color: #0e1621;")
         content_layout = QVBoxLayout(content_area)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # Top Header Bar (Chat Title + Live Search Input)
+        # Top Header Bar
         self.chat_header = QFrame(content_area)
         self.chat_header.setFixedHeight(64)
         self.chat_header.setStyleSheet("background-color: #17212b; border-bottom: 1px solid #0e1621;")
@@ -172,6 +173,7 @@ class MainView(QWidget):
         # Page 1: Track List
         self.track_list = TrackListWidget(content_area)
         self.track_list.track_selected.connect(self.track_selected.emit)
+        self.track_list.load_more_requested.connect(self._on_load_more_tracks)
 
         self.content_stack.addWidget(placeholder_page)
         self.content_stack.addWidget(self.track_list)
@@ -205,18 +207,25 @@ class MainView(QWidget):
         self.selected_chat_title.setText(f"{chat.title} ({chat.type_display})")
         self.search_input.clear()
         self.search_input.show()
-        self.placeholder_msg.setText("در حال جستجو و دریافت لیست موزیک‌ها... 🔄")
+        self.placeholder_msg.setText("در حال دریافت ترک‌ها... 🔄")
         self.content_stack.setCurrentIndex(0)
         self.chat_selected.emit(chat)
 
-    def set_tracks(self, tracks: list[Track]) -> None:
+    def set_initial_tracks(self, tracks: list[Track], has_more: bool) -> None:
         if not tracks:
             self.placeholder_msg.setText("هیچ موزیکی در این کانال یافت نشد! 📂")
             self.content_stack.setCurrentIndex(0)
             return
 
-        self.track_list.set_tracks(tracks)
+        self.track_list.set_tracks(tracks, has_more=has_more)
         self.content_stack.setCurrentIndex(1)
+
+    def append_tracks(self, new_tracks: list[Track], has_more: bool) -> None:
+        self.track_list.append_tracks(new_tracks, has_more=has_more)
+
+    def _on_load_more_tracks(self) -> None:
+        if self._active_chat:
+            self.load_more_tracks_requested.emit(self._active_chat.id)
 
     def _on_search_text_changed(self, text: str) -> None:
         self.track_list.filter_tracks(text)

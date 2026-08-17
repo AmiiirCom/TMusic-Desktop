@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,16 +20,31 @@ MUSIC_TITLE_KEYWORDS = (
     "موزيك",
     "آهنگ",
     "اهنگ",
+    "موسیقی",
     "music",
     "playlist",
     "پلی لیست",
     "پلی‌لیست",
     "پلیلیست",
+    "remix",
+    "ریمیکس",
+    "podcast",
+    "پادکست",
+    "ترانه",
 )
 
 
+@dataclass(slots=True)
+class ChatTrackPaginationState:
+    chat_id: int
+    tracks: list[Track] = field(default_factory=list)
+    next_from_message_id: int = 0
+    is_loading: bool = False
+    has_more: bool = True
+
+
 class TelegramService(QObject):
-    """High-speed event-driven Telegram service with robust keyword filtering."""
+    """High-speed Telegram service with robust auth guards and lazy track loading."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -36,8 +52,10 @@ class TelegramService(QObject):
 
     user_loaded = Signal(TelegramUser)
     owned_chats_loaded = Signal(list)
-    tracks_loaded = Signal(object, list)
     chat_selected = Signal(object)
+
+    tracks_loaded = Signal(object, list, bool)
+    tracks_appended = Signal(object, list, bool)
 
     file_download_progress = Signal(int, int, int)
     file_download_completed = Signal(int, str)
@@ -63,9 +81,11 @@ class TelegramService(QObject):
         self._supergroups: dict[int, dict[str, Any]] = {}
         self._basic_groups: dict[int, dict[str, Any]] = {}
         self._owned_chats: dict[int, OwnedChat] = {}
-        self._chat_tracks: dict[int, list[Track]] = {}
         self._downloading_files: set[int] = set()
         self._file_id_to_path: dict[int, str] = {}
+
+        # Per-chat Track Pagination state
+        self._track_pagination: dict[int, ChatTrackPaginationState] = {}
 
         # Loading trackers
         self._loading_main_chats = False
@@ -135,16 +155,20 @@ class TelegramService(QObject):
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
 
-        # 1. Track Search Responses
+        # 1. Chunked Track Search Responses
         if isinstance(extra, str) and extra.startswith("load_tracks_"):
-            chat_id = int(extra.replace("load_tracks_", ""))
+            parts = extra.split("_")
+            chat_id = int(parts[2])
+            is_initial = parts[3] == "initial"
+
             if update_type in ("foundChatMessages", "messages"):
                 messages = update.get("messages", [])
-                logger.info("Received %d messages for chat %d", len(messages), chat_id)
-                self._process_chat_audio_messages(chat_id, messages)
+                next_from_id = update.get("next_from_message_id", 0)
+                self._process_chat_audio_messages(chat_id, messages, next_from_id, is_initial)
             elif update_type == "error":
-                logger.error("Failed to load tracks for chat %d: %s", chat_id, update.get("message"))
-                self.tracks_loaded.emit(chat_id, [])
+                logger.error("Failed to load tracks chunk for chat %d: %s", chat_id, update.get("message"))
+                if is_initial:
+                    self.tracks_loaded.emit(chat_id, [], False)
             return
 
         # 2. Chat Pagination Responses
@@ -272,7 +296,7 @@ class TelegramService(QObject):
 
             case "authorizationStateReady":
                 self._auth_state = AuthState.READY
-                logger.info("Authorization READY! Launching chat sync...")
+                logger.info("Authorization READY! Launching continuous chat sync...")
                 self._adapter.send({"@type": "getMe"})
                 self._adapter.send({
                     "@type": "getCreatedPublicChats",
@@ -466,23 +490,56 @@ class TelegramService(QObject):
         elif local.get("is_downloading_active", False):
             self.file_download_progress.emit(file_id, downloaded, total)
 
-    # --- Music Scanning & Extraction ---
+    # --- Chunked Lazy Music Loading (Infinite Scrolling) ---
 
-    def load_chat_tracks(self, chat_id: int, limit: int = 100) -> None:
-        logger.info("Searching music tracks in chat ID: %d ...", chat_id)
+    def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
+        """Load first chunk or subsequent lazy chunk of music tracks."""
+        if reset or chat_id not in self._track_pagination:
+            state = ChatTrackPaginationState(chat_id=chat_id)
+            self._track_pagination[chat_id] = state
+        else:
+            state = self._track_pagination[chat_id]
+
+        if state.is_loading or not state.has_more:
+            return
+
+        state.is_loading = True
+        is_initial_str = "initial" if reset else "lazy"
+        from_msg_id = state.next_from_message_id if not reset else 0
+
+        logger.info(
+            "Loading tracks chunk for chat %d (from_id=%d, limit=%d, type=%s)...",
+            chat_id, from_msg_id, chunk_size, is_initial_str
+        )
+
         self._adapter.send({
             "@type": "searchChatMessages",
             "chat_id": chat_id,
             "query": "",
-            "from_message_id": 0,
+            "from_message_id": from_msg_id,
             "offset": 0,
-            "limit": limit,
+            "limit": chunk_size,
             "filter": {"@type": "searchMessagesFilterAudio"},
-            "@extra": f"load_tracks_{chat_id}",
+            "@extra": f"load_tracks_{chat_id}_{is_initial_str}",
         })
 
-    def _process_chat_audio_messages(self, chat_id: int, messages: list[dict[str, Any]]) -> None:
-        tracks: list[Track] = []
+    def load_more_tracks(self, chat_id: int) -> None:
+        """Called when user scrolls to bottom of track list."""
+        self.load_chat_tracks(chat_id, reset=False)
+
+    def _process_chat_audio_messages(
+        self, chat_id: int, messages: list[dict[str, Any]], next_from_id: int, is_initial: bool
+    ) -> None:
+        state = self._track_pagination.get(chat_id)
+        if not state:
+            state = ChatTrackPaginationState(chat_id=chat_id)
+            self._track_pagination[chat_id] = state
+
+        state.is_loading = False
+        state.next_from_message_id = next_from_id
+        state.has_more = (next_from_id != 0) and (len(messages) > 0)
+
+        chunk_tracks: list[Track] = []
         for msg in messages:
             content = msg.get("content", {})
             content_type = content.get("@type", "")
@@ -511,7 +568,7 @@ class TelegramService(QObject):
                     local_path=path if (local_file.get("is_downloading_completed") and Path(path).exists()) else None,
                     is_downloaded=local_file.get("is_downloading_completed", False),
                 )
-                tracks.append(track)
+                chunk_tracks.append(track)
 
             elif content_type == "messageDocument":
                 doc = content.get("document", {})
@@ -544,9 +601,14 @@ class TelegramService(QObject):
                     )
                     tracks.append(track)
 
-        self._chat_tracks[chat_id] = tracks
-        logger.info("Extracted %d tracks from chat ID: %d", len(tracks), chat_id)
-        self.tracks_loaded.emit(chat_id, tracks)
+        if is_initial:
+            state.tracks = list(chunk_tracks)
+            logger.info("Initial chunk for chat %d: %d tracks (has_more: %s)", chat_id, len(chunk_tracks), state.has_more)
+            self.tracks_loaded.emit(chat_id, state.tracks, state.has_more)
+        else:
+            state.tracks.extend(chunk_tracks)
+            logger.info("Lazy chunk for chat %d: %d new tracks (total: %d, has_more: %s)", chat_id, len(chunk_tracks), len(state.tracks), state.has_more)
+            self.tracks_appended.emit(chat_id, chunk_tracks, state.has_more)
 
     def _extract_user(self, user_obj: dict[str, Any], is_self: bool = False) -> None:
         user_id = user_obj.get("id", 0)
@@ -571,7 +633,32 @@ class TelegramService(QObject):
             logger.info("Current user profile: %s (ID: %d)", user.full_name, user.id)
             self.user_loaded.emit(user)
 
-    # --- Proxy & Auth Controls ---
+    # --- Secure Auth Action Guards ---
+
+    def send_phone_number(self, phone_number: str) -> None:
+        if self._auth_state != AuthState.WAIT_PHONE_NUMBER:
+            logger.warning("Ignoring phone submission: Auth state is %s", self._auth_state)
+            return
+
+        self._adapter.send({
+            "@type": "setAuthenticationPhoneNumber",
+            "phone_number": phone_number.strip(),
+            "settings": {"@type": "phoneNumberAuthenticationSettings"},
+        })
+
+    def send_code(self, code: str) -> None:
+        if self._auth_state != AuthState.WAIT_CODE:
+            logger.warning("Ignoring code submission: Auth state is %s", self._auth_state)
+            return
+
+        self._adapter.send({"@type": "checkAuthenticationCode", "code": code.strip()})
+
+    def send_password(self, password: str) -> None:
+        if self._auth_state != AuthState.WAIT_PASSWORD:
+            logger.warning("Ignoring password submission: Auth state is %s", self._auth_state)
+            return
+
+        self._adapter.send({"@type": "checkAuthenticationPassword", "password": password})
 
     def set_socks5_proxy(
         self, server: str, port: int, username: str = "", password: str = ""
@@ -611,19 +698,6 @@ class TelegramService(QObject):
             },
             "enable": True,
         })
-
-    def send_phone_number(self, phone_number: str) -> None:
-        self._adapter.send({
-            "@type": "setAuthenticationPhoneNumber",
-            "phone_number": phone_number.strip(),
-            "settings": {"@type": "phoneNumberAuthenticationSettings"},
-        })
-
-    def send_code(self, code: str) -> None:
-        self._adapter.send({"@type": "checkAuthenticationCode", "code": code.strip()})
-
-    def send_password(self, password: str) -> None:
-        self._adapter.send({"@type": "checkAuthenticationPassword", "password": password})
 
     def log_out(self) -> None:
         self._adapter.send({"@type": "logOut"})
