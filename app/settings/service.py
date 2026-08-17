@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.security import CryptoManager
+from app.models.chat import OwnedChat
 
 logger = logging.getLogger("tmusic.settings.service")
 
@@ -25,10 +26,11 @@ class UserPreferences:
     minimize_to_tray: bool = True
     last_chat_id: int = 0
     proxy: ProxySettings = field(default_factory=ProxySettings)
+    cached_music_chats: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SettingsService:
-    """Manages secure encrypted user settings persistence."""
+    """Manages secure encrypted user settings and cached music channels."""
 
     def __init__(self, data_dir: Path, crypto: CryptoManager) -> None:
         self._data_dir = data_dir
@@ -64,6 +66,7 @@ class SettingsService:
                 minimize_to_tray=data.get("minimize_to_tray", True),
                 last_chat_id=data.get("last_chat_id", 0),
                 proxy=proxy,
+                cached_music_chats=data.get("cached_music_chats", []),
             )
             logger.info("Loaded secure encrypted preferences successfully.")
         except Exception as exc:
@@ -77,9 +80,37 @@ class SettingsService:
             "minimize_to_tray": self._preferences.minimize_to_tray,
             "last_chat_id": self._preferences.last_chat_id,
             "proxy": asdict(self._preferences.proxy),
+            "cached_music_chats": self._preferences.cached_music_chats,
         }
         self._crypto.save_encrypted_json(self._settings_file, payload)
-        logger.info("Saved encrypted settings to %s", self._settings_file)
+
+    def set_cached_music_chats(self, chats: list[OwnedChat]) -> None:
+        """Cache discovered music channels for instant subsequent launches."""
+        self._preferences.cached_music_chats = [
+            {
+                "id": c.id,
+                "title": c.title,
+                "is_channel": c.is_channel,
+                "supergroup_id": c.supergroup_id,
+                "unread_count": c.unread_count,
+            }
+            for c in chats
+        ]
+        self.save()
+
+    def get_cached_music_chats(self) -> list[OwnedChat]:
+        """Retrieve instantly loaded music channels from disk cache."""
+        return [
+            OwnedChat(
+                id=c["id"],
+                title=c["title"],
+                is_channel=c.get("is_channel", True),
+                supergroup_id=c.get("supergroup_id", 0),
+                unread_count=c.get("unread_count", 0),
+            )
+            for c in self._preferences.cached_music_chats
+            if "id" in c and "title" in c
+        ]
 
     def set_proxy(self, proxy_type: str, server: str, port: int, enabled: bool = True) -> None:
         self._preferences.proxy.enabled = enabled

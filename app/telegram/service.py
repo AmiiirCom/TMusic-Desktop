@@ -7,15 +7,28 @@ from app.config import AppConfig
 from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
+from app.settings.service import SettingsService
 from app.telegram.adapter import TDLibAdapter
 from app.telegram.enums import AuthState
 from app.telegram.worker import TDLibWorker
 
 logger = logging.getLogger("tmusic.telegram.service")
 
+MUSIC_TITLE_KEYWORDS = (
+    "موزیک",
+    "موزيك",
+    "آهنگ",
+    "اهنگ",
+    "music",
+    "playlist",
+    "پلی لیست",
+    "پلی‌لیست",
+    "پلیلیست",
+)
+
 
 class TelegramService(QObject):
-    """Event-driven Telegram service with media download and cache tracking."""
+    """High-speed event-driven Telegram service with robust keyword filtering."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -29,10 +42,16 @@ class TelegramService(QObject):
     file_download_progress = Signal(int, int, int)
     file_download_completed = Signal(int, str)
 
-    def __init__(self, config: AppConfig, adapter: TDLibAdapter) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        adapter: TDLibAdapter,
+        settings_service: SettingsService | None = None,
+    ) -> None:
         super().__init__()
         self._config = config
         self._adapter = adapter
+        self._settings = settings_service
         self._worker: TDLibWorker | None = None
         self._auth_state = AuthState.UNKNOWN
         self._connection_state = "waiting_for_network"
@@ -56,12 +75,50 @@ class TelegramService(QObject):
     def current_user(self) -> TelegramUser | None:
         return self._current_user
 
+    def set_settings_service(self, settings_service: SettingsService) -> None:
+        self._settings = settings_service
+
+    def load_cached_music_chats(self) -> None:
+        """Instantly emit cached music channels to UI."""
+        if self._settings:
+            cached = self._settings.get_cached_music_chats()
+            if cached:
+                for c in cached:
+                    self._owned_chats[c.id] = c
+                logger.info("Instantly loaded %d music channels from local cache ⚡", len(cached))
+                self.owned_chats_loaded.emit(list(self._owned_chats.values()))
+
     def get_downloaded_path(self, file_id: int) -> str | None:
-        """Check if file is already downloaded and exists on disk."""
         path = self._file_id_to_path.get(file_id)
         if path and Path(path).exists():
             return path
         return None
+
+    def _is_music_chat_title(self, title: str) -> bool:
+        """Robust Persian & English music keyword matching."""
+        if not title:
+            return False
+
+        t_clean = (
+            title.lower()
+            .replace("\u200c", " ")
+            .replace("ي", "ی")
+            .replace("ك", "ک")
+            .replace("آ", "ا")
+        )
+        t_nospaces = t_clean.replace(" ", "")
+
+        for kw in MUSIC_TITLE_KEYWORDS:
+            kw_clean = (
+                kw.lower()
+                .replace("\u200c", " ")
+                .replace("ي", "ی")
+                .replace("ك", "ک")
+                .replace("آ", "ا")
+            )
+            if kw_clean in t_clean or kw_clean.replace(" ", "") in t_nospaces:
+                return True
+        return False
 
     def start(self) -> None:
         if not self._adapter.is_loaded:
@@ -95,7 +152,7 @@ class TelegramService(QObject):
             if update_type == "ok":
                 self._load_next_main_chats()
             elif update_type == "error":
-                logger.info("Main chats fully loaded (%d chats). Now loading archive...", len(self._raw_chats))
+                logger.info("Main chats stream complete (%d chats). Loading archive...", len(self._raw_chats))
                 self._loading_main_chats = False
                 self._load_archive_chats()
             return
@@ -104,11 +161,20 @@ class TelegramService(QObject):
             if update_type == "ok":
                 self._load_next_archive_chats()
             elif update_type == "error":
-                logger.info("Archive chats fully loaded. Total chats scanned: %d", len(self._raw_chats))
+                logger.info("Archive stream complete. Total chats scanned: %d", len(self._raw_chats))
                 self._loading_archive_chats = False
             return
 
-        # 3. General Updates
+        # 3. Direct response from getSupergroup checks
+        if isinstance(extra, str) and extra.startswith("check_supergroup_"):
+            chat_id = int(extra.replace("check_supergroup_", ""))
+            if update_type == "supergroup":
+                sg_id = update.get("id", 0)
+                self._supergroups[sg_id] = update
+                self._evaluate_chat_ownership(chat_id)
+            return
+
+        # 4. General Update Streams
         match update_type:
             case "updateAuthorizationState":
                 self._process_auth_state(update.get("authorization_state", {}))
@@ -129,6 +195,11 @@ class TelegramService(QObject):
                 user_obj = update.get("user", {})
                 if self._my_user_id == 0 or user_obj.get("id") == self._my_user_id:
                     self._extract_user(user_obj, is_self=True)
+
+            case "chats":
+                chat_ids = update.get("chat_ids", [])
+                for cid in chat_ids:
+                    self._adapter.send({"@type": "getChat", "chat_id": cid})
 
             case "updateNewChat":
                 chat = update.get("chat", {})
@@ -153,26 +224,27 @@ class TelegramService(QObject):
                 self._basic_groups[bg_id] = bg
                 self._recheck_basicgroup_chats(bg_id)
 
-            case "chats":
-                chat_ids = update.get("chat_ids", [])
-                for cid in chat_ids:
-                    self._adapter.send({"@type": "getChat", "chat_id": cid})
-
             case "updateChatTitle":
                 chat_id = update.get("chat_id", 0)
                 new_title = update.get("title", "")
                 if chat_id in self._raw_chats:
                     self._raw_chats[chat_id]["title"] = new_title
+
                 if chat_id in self._owned_chats:
-                    old = self._owned_chats[chat_id]
-                    self._owned_chats[chat_id] = OwnedChat(
-                        id=old.id,
-                        title=new_title,
-                        is_channel=old.is_channel,
-                        supergroup_id=old.supergroup_id,
-                        unread_count=old.unread_count,
-                    )
-                    self.owned_chats_loaded.emit(list(self._owned_chats.values()))
+                    if self._is_music_chat_title(new_title):
+                        old = self._owned_chats[chat_id]
+                        self._owned_chats[chat_id] = OwnedChat(
+                            id=old.id,
+                            title=new_title,
+                            is_channel=old.is_channel,
+                            supergroup_id=old.supergroup_id,
+                            unread_count=old.unread_count,
+                        )
+                    else:
+                        del self._owned_chats[chat_id]
+                    self._sync_and_emit_owned_chats()
+                else:
+                    self._evaluate_chat_ownership(chat_id)
 
             case "error":
                 code = update.get("code")
@@ -200,13 +272,13 @@ class TelegramService(QObject):
 
             case "authorizationStateReady":
                 self._auth_state = AuthState.READY
-                logger.info("Authorization READY! Initiating deep chat discovery...")
+                logger.info("Authorization READY! Launching chat sync...")
                 self._adapter.send({"@type": "getMe"})
                 self._adapter.send({
                     "@type": "getCreatedPublicChats",
                     "type": {"@type": "publicChatTypeHasUsername"},
                 })
-                self._start_deep_chat_loading()
+                self._start_chat_loading()
 
             case "authorizationStateLoggingOut":
                 self._auth_state = AuthState.LOGGING_OUT
@@ -240,10 +312,125 @@ class TelegramService(QObject):
         }
         self._adapter.send(params)
 
-    # --- File Download & Cache Management ---
+    # --- Fast Stream Chat Loading ---
+
+    def _start_chat_loading(self) -> None:
+        self._loading_main_chats = True
+        self._load_next_main_chats()
+
+    def _load_next_main_chats(self) -> None:
+        self._adapter.send({
+            "@type": "loadChats",
+            "chat_list": {"@type": "chatListMain"},
+            "limit": 100,
+            "@extra": "load_main_chats",
+        })
+
+    def _load_archive_chats(self) -> None:
+        self._loading_archive_chats = True
+        self._load_next_archive_chats()
+
+    def _load_next_archive_chats(self) -> None:
+        self._adapter.send({
+            "@type": "loadChats",
+            "chat_list": {"@type": "chatListArchive"},
+            "limit": 100,
+            "@extra": "load_archive_chats",
+        })
+
+    def _evaluate_chat_ownership(self, chat_id: int) -> None:
+        chat = self._raw_chats.get(chat_id)
+        if not chat:
+            return
+
+        title = chat.get("title", "")
+        if not self._is_music_chat_title(title):
+            return
+
+        chat_type = chat.get("type", {})
+        type_str = chat_type.get("@type", "")
+
+        if type_str == "chatTypeSupergroup":
+            sg_id = chat_type.get("supergroup_id", 0)
+            if sg_id in self._supergroups:
+                sg = self._supergroups[sg_id]
+                status = sg.get("status", {}).get("@type", "")
+                if status == "chatMemberStatusCreator" or sg.get("is_creator", False):
+                    self._add_owned_chat(
+                        chat_id=chat_id,
+                        title=title,
+                        is_channel=sg.get("is_channel", True),
+                        supergroup_id=sg_id,
+                        unread_count=chat.get("unread_count", 0),
+                    )
+            else:
+                self._adapter.send({
+                    "@type": "getSupergroup",
+                    "supergroup_id": sg_id,
+                    "@extra": f"check_supergroup_{chat_id}",
+                })
+
+        elif type_str == "chatTypeBasicGroup":
+            bg_id = chat_type.get("basic_group_id", 0)
+            if bg_id in self._basic_groups:
+                bg = self._basic_groups[bg_id]
+                status = bg.get("status", {}).get("@type", "")
+                if status == "chatMemberStatusCreator" or bg.get("is_creator", False):
+                    self._add_owned_chat(
+                        chat_id=chat_id,
+                        title=title,
+                        is_channel=False,
+                        supergroup_id=0,
+                        unread_count=chat.get("unread_count", 0),
+                    )
+
+    def _recheck_supergroup_chats(self, sg_id: int) -> None:
+        for chat_id, chat in self._raw_chats.items():
+            chat_type = chat.get("type", {})
+            if (
+                chat_type.get("@type") == "chatTypeSupergroup"
+                and chat_type.get("supergroup_id") == sg_id
+            ):
+                self._evaluate_chat_ownership(chat_id)
+
+    def _recheck_basicgroup_chats(self, bg_id: int) -> None:
+        for chat_id, chat in self._raw_chats.items():
+            chat_type = chat.get("type", {})
+            if (
+                chat_type.get("@type") == "chatTypeBasicGroup"
+                and chat_type.get("basic_group_id") == bg_id
+            ):
+                self._evaluate_chat_ownership(chat_id)
+
+    def _add_owned_chat(
+        self, chat_id: int, title: str, is_channel: bool, supergroup_id: int, unread_count: int
+    ) -> None:
+        if chat_id in self._owned_chats:
+            return
+
+        if not self._is_music_chat_title(title):
+            return
+
+        owned_chat = OwnedChat(
+            id=chat_id,
+            title=title,
+            is_channel=is_channel,
+            supergroup_id=supergroup_id,
+            unread_count=unread_count,
+        )
+        self._owned_chats[chat_id] = owned_chat
+        logger.info("Found owned music chat: %s (ID: %d)", title, chat_id)
+        self._sync_and_emit_owned_chats()
+
+    def _sync_and_emit_owned_chats(self) -> None:
+        chat_list = list(self._owned_chats.values())
+        if self._settings:
+            self._settings.set_cached_music_chats(chat_list)
+        self.owned_chats_loaded.emit(chat_list)
+
+    # --- Media Download & Playback Support ---
 
     def download_file(self, file_id: int) -> None:
-        # Check if already completed
         if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
             self.file_download_completed.emit(file_id, self._file_id_to_path[file_id])
             return
@@ -361,32 +548,6 @@ class TelegramService(QObject):
         logger.info("Extracted %d tracks from chat ID: %d", len(tracks), chat_id)
         self.tracks_loaded.emit(chat_id, tracks)
 
-    # --- Deep Paginated Chat Loading ---
-
-    def _start_deep_chat_loading(self) -> None:
-        self._loading_main_chats = True
-        self._load_next_main_chats()
-
-    def _load_next_main_chats(self) -> None:
-        self._adapter.send({
-            "@type": "loadChats",
-            "chat_list": {"@type": "chatListMain"},
-            "limit": 100,
-            "@extra": "load_main_chats",
-        })
-
-    def _load_archive_chats(self) -> None:
-        self._loading_archive_chats = True
-        self._load_next_archive_chats()
-
-    def _load_next_archive_chats(self) -> None:
-        self._adapter.send({
-            "@type": "loadChats",
-            "chat_list": {"@type": "chatListArchive"},
-            "limit": 100,
-            "@extra": "load_archive_chats",
-        })
-
     def _extract_user(self, user_obj: dict[str, Any], is_self: bool = False) -> None:
         user_id = user_obj.get("id", 0)
         if not user_id:
@@ -409,79 +570,6 @@ class TelegramService(QObject):
             self._current_user = user
             logger.info("Current user profile: %s (ID: %d)", user.full_name, user.id)
             self.user_loaded.emit(user)
-
-    def _evaluate_chat_ownership(self, chat_id: int) -> None:
-        chat = self._raw_chats.get(chat_id)
-        if not chat:
-            return
-
-        chat_type = chat.get("type", {})
-        type_str = chat_type.get("@type", "")
-
-        if type_str == "chatTypeSupergroup":
-            sg_id = chat_type.get("supergroup_id", 0)
-            if sg_id in self._supergroups:
-                sg = self._supergroups[sg_id]
-                status = sg.get("status", {}).get("@type", "")
-                if status == "chatMemberStatusCreator" or sg.get("is_creator", False):
-                    self._add_owned_chat(
-                        chat_id=chat_id,
-                        title=chat.get("title", "بدون نام"),
-                        is_channel=sg.get("is_channel", True),
-                        supergroup_id=sg_id,
-                        unread_count=chat.get("unread_count", 0),
-                    )
-            else:
-                self._adapter.send({"@type": "getSupergroup", "supergroup_id": sg_id})
-
-        elif type_str == "chatTypeBasicGroup":
-            bg_id = chat_type.get("basic_group_id", 0)
-            if bg_id in self._basic_groups:
-                bg = self._basic_groups[bg_id]
-                status = bg.get("status", {}).get("@type", "")
-                if status == "chatMemberStatusCreator" or bg.get("is_creator", False):
-                    self._add_owned_chat(
-                        chat_id=chat_id,
-                        title=chat.get("title", "بدون نام"),
-                        is_channel=False,
-                        supergroup_id=0,
-                        unread_count=chat.get("unread_count", 0),
-                    )
-
-    def _recheck_supergroup_chats(self, sg_id: int) -> None:
-        for chat_id, chat in self._raw_chats.items():
-            chat_type = chat.get("type", {})
-            if (
-                chat_type.get("@type") == "chatTypeSupergroup"
-                and chat_type.get("supergroup_id") == sg_id
-            ):
-                self._evaluate_chat_ownership(chat_id)
-
-    def _recheck_basicgroup_chats(self, bg_id: int) -> None:
-        for chat_id, chat in self._raw_chats.items():
-            chat_type = chat.get("type", {})
-            if (
-                chat_type.get("@type") == "chatTypeBasicGroup"
-                and chat_type.get("basic_group_id") == bg_id
-            ):
-                self._evaluate_chat_ownership(chat_id)
-
-    def _add_owned_chat(
-        self, chat_id: int, title: str, is_channel: bool, supergroup_id: int, unread_count: int
-    ) -> None:
-        if chat_id in self._owned_chats:
-            return
-
-        owned_chat = OwnedChat(
-            id=chat_id,
-            title=title,
-            is_channel=is_channel,
-            supergroup_id=supergroup_id,
-            unread_count=unread_count,
-        )
-        self._owned_chats[chat_id] = owned_chat
-        logger.info("Discovered owned chat: %s (ID: %d)", title, chat_id)
-        self.owned_chats_loaded.emit(list(self._owned_chats.values()))
 
     # --- Proxy & Auth Controls ---
 

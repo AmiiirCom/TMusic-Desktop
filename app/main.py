@@ -105,6 +105,9 @@ class MainWindow(QMainWindow):
         self._telegram.owned_chats_loaded.connect(self._main_view.set_owned_chats)
         self._telegram.tracks_loaded.connect(self._on_tracks_loaded)
 
+        # Emit cached music channels immediately after signal connection
+        self._telegram.load_cached_music_chats()
+
         # Apply saved proxy automatically on launch
         self._apply_saved_proxy()
 
@@ -118,7 +121,6 @@ class MainWindow(QMainWindow):
                 self._telegram.set_http_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Minimize to system tray instead of closing when user clicks 'X'."""
         if not self._is_quitting:
             event.ignore()
             self.hide()
@@ -199,12 +201,12 @@ def main() -> int:
 
     app = create_application(config)
 
-    # Initialize Cryptography & Settings Subsystem
     crypto_manager = CryptoManager(config.data_dir)
     settings_service = SettingsService(config.data_dir, crypto_manager)
 
     tdlib_adapter = TDLibAdapter()
-    telegram_service = TelegramService(config, tdlib_adapter)
+    telegram_service = TelegramService(config, tdlib_adapter, settings_service)
+
     player_service = PlayerService(telegram_service)
     cache_service = CacheService(config)
     network_meter = NetworkMeter()
