@@ -13,12 +13,12 @@ from app.ui.views.proxy_dialog import ProxyDialog
 
 
 class LoginView(QWidget):
-    """Telegram-styled authentication widget with loading & proxy controls."""
+    """Telegram-styled authentication widget with dual-input phone fields."""
 
     phone_submitted = Signal(str)
     code_submitted = Signal(str)
     password_submitted = Signal(str)
-    proxy_configured = Signal(str, str, int)  # type, server, port
+    proxy_configured = Signal(str, str, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -55,18 +55,18 @@ class LoginView(QWidget):
 
         # Card container
         card = QWidget(self)
-        card.setFixedWidth(380)
+        card.setFixedWidth(400)
         card.setStyleSheet("""
             QWidget {
                 background-color: #ffffff;
                 border-radius: 12px;
             }
             QLabel {
-                font-family: 'Segoe UI', 'Vazirmatn', sans-serif;
+                font-family: 'Vazirmatn', 'Segoe UI', sans-serif;
                 color: #222222;
             }
             QLineEdit {
-                padding: 10px 14px;
+                padding: 10px 12px;
                 border: 1.5px solid #dfe1e5;
                 border-radius: 8px;
                 font-size: 14px;
@@ -108,26 +108,43 @@ class LoginView(QWidget):
 
         self.stack = QStackedWidget(self)
 
-        # 1. Phone Step
+        # 1. Phone Step (Separated Prefix + Number)
         phone_page = QWidget()
         phone_layout = QVBoxLayout(phone_page)
         phone_layout.setContentsMargins(0, 0, 0, 0)
-        phone_layout.setSpacing(12)
+        phone_layout.setSpacing(14)
 
-        desc_phone = QLabel("شماره موبایل خود را همراه با کد کشور وارد کنید:")
+        desc_phone = QLabel("کد کشور و شماره موبایل خود را وارد کنید:")
         desc_phone.setWordWrap(True)
         desc_phone.setStyleSheet("font-size: 13px; color: #707579;")
-        self.phone_input = QLineEdit()
-        self.phone_input.setPlaceholderText("+989123456789")
-        self.phone_input.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        self.phone_input.returnPressed.connect(self._on_submit_phone)
+
+        # Dual Input Container (Explicitly LTR on QWidget)
+        inputs_container = QWidget(phone_page)
+        inputs_container.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        inputs_row = QHBoxLayout(inputs_container)
+        inputs_row.setContentsMargins(0, 0, 0, 0)
+        inputs_row.setSpacing(8)
+
+        # Country Code Input
+        self.country_code_input = QLineEdit("+98")
+        self.country_code_input.setFixedWidth(80)
+        self.country_code_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.country_code_input.returnPressed.connect(self._on_country_code_enter)
+
+        # Main Phone Number Input
+        self.phone_number_input = QLineEdit()
+        self.phone_number_input.setPlaceholderText("9123456789")
+        self.phone_number_input.returnPressed.connect(self._on_submit_phone)
+
+        inputs_row.addWidget(self.country_code_input)
+        inputs_row.addWidget(self.phone_number_input)
 
         self.btn_phone = QPushButton("ادامه")
         self.btn_phone.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_phone.clicked.connect(self._on_submit_phone)
 
         phone_layout.addWidget(desc_phone)
-        phone_layout.addWidget(self.phone_input)
+        phone_layout.addWidget(inputs_container)
         phone_layout.addWidget(self.btn_phone)
 
         # 2. Code Step
@@ -206,7 +223,7 @@ class LoginView(QWidget):
         self._reset_buttons()
         self.error_label.hide()
         self.stack.setCurrentIndex(0)
-        self.phone_input.setFocus()
+        self.phone_number_input.setFocus()
 
     def show_code_step(self) -> None:
         self._reset_buttons()
@@ -233,12 +250,26 @@ class LoginView(QWidget):
         self.btn_pwd.setEnabled(True)
         self.btn_pwd.setText("ورود")
 
+    def _on_country_code_enter(self) -> None:
+        self.phone_number_input.setFocus()
+
     def _on_submit_phone(self) -> None:
-        text = self.phone_input.text().strip()
-        if text:
-            self.btn_phone.setEnabled(False)
-            self.btn_phone.setText("در حال ارسال...")
-            self.phone_submitted.emit(text)
+        code = self.country_code_input.text().strip()
+        number = self.phone_number_input.text().strip()
+
+        if not code or not number:
+            self.show_error("لطفاً پیش‌شماره کشور و شماره تلفن را وارد کنید.")
+            return
+
+        if not code.startswith("+"):
+            code = f"+{code}"
+
+        clean_number = number.lstrip("0")
+        full_phone = f"{code}{clean_number}"
+
+        self.btn_phone.setEnabled(False)
+        self.btn_phone.setText("در حال ارسال...")
+        self.phone_submitted.emit(full_phone)
 
     def _on_submit_code(self) -> None:
         text = self.code_input.text().strip()
