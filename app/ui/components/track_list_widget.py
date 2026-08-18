@@ -78,7 +78,7 @@ def create_rounded_cover_pixmap(
 
 
 class TrackItemWidget(QWidget):
-    """Custom Telegram-styled track list item with HD album artwork and date tag."""
+    """Custom Telegram-styled track list item with exclusive active playback highlighting."""
 
     def __init__(self, track: Track, is_active: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -92,6 +92,21 @@ class TrackItemWidget(QWidget):
         layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(14)
 
+        # Subtle row highlight ONLY for the currently playing track
+        if self._is_active:
+            self.setStyleSheet("""
+                TrackItemWidget {
+                    background-color: #172433;
+                    border-radius: 8px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                TrackItemWidget {
+                    background-color: transparent;
+                }
+            """)
+
         self.cover_label = QLabel()
         self.cover_label.setFixedSize(44, 44)
         self.update_cover(self.track.cover_path)
@@ -102,10 +117,10 @@ class TrackItemWidget(QWidget):
 
         title_color = "#6ab3f3" if self._is_active else "#ffffff"
         self.title_label = QLabel(self.track.display_title)
-        self.title_label.setStyleSheet(f"color: {title_color}; font-size: 14px; font-weight: bold;")
+        self.title_label.setStyleSheet(f"color: {title_color}; font-size: 14px; font-weight: bold; background: transparent;")
 
         self.artist_label = QLabel(self.track.display_artist)
-        self.artist_label.setStyleSheet("color: #7f91a4; font-size: 12px;")
+        self.artist_label.setStyleSheet("color: #7f91a4; font-size: 12px; background: transparent;")
 
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.artist_label)
@@ -115,7 +130,7 @@ class TrackItemWidget(QWidget):
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
         duration_label = QLabel(self.track.formatted_duration)
-        duration_label.setStyleSheet("color: #6ab3f3; font-size: 13px; font-weight: bold;")
+        duration_label.setStyleSheet("color: #6ab3f3; font-size: 13px; font-weight: bold; background: transparent;")
         duration_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
         meta_text = (
@@ -124,7 +139,7 @@ class TrackItemWidget(QWidget):
             else self.track.formatted_size
         )
         meta_sub_label = QLabel(meta_text)
-        meta_sub_label.setStyleSheet("color: #5d6e80; font-size: 11px;")
+        meta_sub_label.setStyleSheet("color: #5d6e80; font-size: 11px; background: transparent;")
         meta_sub_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
         meta_layout.addWidget(duration_label)
@@ -146,7 +161,7 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget with live delta-sync prepending, deletions, and playing indicators."""
+    """List widget holding the tracks with NO default selection highlight on right-click."""
 
     track_selected = Signal(Track)
     load_more_requested = Signal()
@@ -161,6 +176,10 @@ class TrackListWidget(QListWidget):
         self._has_more: bool = True
         self._is_loading_more: bool = False
 
+        # Disable default list selection box completely
+        self.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
         self.setStyleSheet("""
             QListWidget {
                 background-color: #0e1621;
@@ -170,12 +189,14 @@ class TrackListWidget(QListWidget):
             QListWidget::item {
                 border-bottom: 1px solid #17212b;
                 background-color: transparent;
+                padding: 0px;
+                margin: 0px;
             }
             QListWidget::item:hover {
                 background-color: #17212b;
             }
             QListWidget::item:selected {
-                background-color: #1d2a3a;
+                background-color: transparent;
             }
         """)
         self.itemDoubleClicked.connect(self._on_item_clicked)
@@ -209,7 +230,6 @@ class TrackListWidget(QListWidget):
             self.filter_tracks(self._current_query)
 
     def prepend_tracks(self, new_tracks: list[Track]) -> None:
-        """Prepend brand new tracks to top of list during Delta-Sync."""
         existing_ids = {t.id for t in self._all_tracks}
         unique_new = [t for t in new_tracks if t.id not in existing_ids]
         if not unique_new:
@@ -230,7 +250,6 @@ class TrackListWidget(QListWidget):
             self.filter_tracks(self._current_query)
 
     def remove_tracks(self, deleted_track_ids: list[str]) -> None:
-        """Remove deleted tracks from UI without resetting scroll position."""
         del_set = set(deleted_track_ids)
         self._all_tracks = [t for t in self._all_tracks if t.id not in del_set]
 
