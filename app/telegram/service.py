@@ -32,7 +32,7 @@ class ChatTrackPaginationState:
 
 
 class TelegramService(QObject):
-    """Clean Facade coordinating Telegram handlers, HD avatar, and Qt signals."""
+    """Clean Facade coordinating Telegram handlers, adaptive network timer, and tray presence."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -66,6 +66,10 @@ class TelegramService(QObject):
         self._current_user: TelegramUser | None = None
         self._avatar_file_id: int = 0
 
+        # Idle countdown tracking
+        self._is_active_monitoring: bool = True
+        self._idle_ticks_count: int = 0
+
         # 1. Initialize Handlers
         self._auth = AuthHandler(
             config=self._config,
@@ -96,7 +100,7 @@ class TelegramService(QObject):
             on_lazy_chunk_appended=self.tracks_appended.emit,
         )
 
-        # 2. Network Stats Timer
+        # 2. Adaptive Network Monitoring Timer (Default 1s active, 30s idle with 1min stop)
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
@@ -112,6 +116,34 @@ class TelegramService(QObject):
     def set_settings_service(self, settings_service: SettingsService) -> None:
         self._settings = settings_service
         self._chats.set_settings_service(settings_service)
+
+    def set_online_status(self, is_online: bool) -> None:
+        """Set Telegram online/offline presence."""
+        if self._adapter.is_loaded:
+            logger.info("Setting Telegram presence online=%s", is_online)
+            self._adapter.send({
+                "@type": "setOption",
+                "name": "online",
+                "value": {"@type": "optionValueBoolean", "value": is_online},
+            })
+
+    def set_network_monitor_active(self, is_active: bool) -> None:
+        """
+        Adjust network polling:
+        - Active (playing/downloading): 1000ms (1s) continuous.
+        - Idle: 30000ms (30s), completely stops after 1 minute (2 ticks).
+        """
+        self._is_active_monitoring = is_active or self._media.has_active_downloads
+        self._idle_ticks_count = 0
+
+        if self._is_active_monitoring:
+            self._net_timer.setInterval(1000)
+            if not self._net_timer.isActive():
+                self._net_timer.start()
+        else:
+            self._net_timer.setInterval(30000)  # 30 seconds interval
+            if not self._net_timer.isActive():
+                self._net_timer.start()
 
     def load_cached_state(self) -> None:
         self._chats.load_cached_chats()
@@ -142,6 +174,14 @@ class TelegramService(QObject):
         logger.info("TelegramService started")
 
     def _poll_network_statistics(self) -> None:
+        if not self._is_active_monitoring and not self._media.has_active_downloads:
+            self._idle_ticks_count += 1
+            # After 2 ticks of 30s (1 minute total of idle), stop timer completely
+            if self._idle_ticks_count >= 2:
+                logger.info("⚡ 1-minute idle threshold reached. Stopping network polling timer completely.")
+                self._net_timer.stop()
+                return
+
         if self._adapter.is_loaded:
             self._adapter.send({
                 "@type": "getNetworkStatistics",
@@ -254,6 +294,7 @@ class TelegramService(QObject):
         self.auth_state_changed.emit(state.value)
 
     def _on_auth_ready(self) -> None:
+        self.set_online_status(True)
         self._chats.start_chat_sync()
 
     def _on_auth_closed(self) -> None:
@@ -358,9 +399,11 @@ class TelegramService(QObject):
         self._auth.send_password(password)
 
     def download_file(self, file_id: int) -> None:
+        self.set_network_monitor_active(True)
         self._media.download_audio_file(file_id)
 
     def prefetch_audio_file(self, file_id: int) -> None:
+        self.set_network_monitor_active(True)
         self._media.prefetch_audio_file(file_id)
 
     def prefetch_cover_file(self, track_id: str, file_id: int) -> None:

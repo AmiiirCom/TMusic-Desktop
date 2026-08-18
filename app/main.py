@@ -109,19 +109,23 @@ class MainWindow(QMainWindow):
         self._player.track_changed.connect(player_bar.set_track)
         self._player.track_changed.connect(self._main_view.set_active_track)
         self._player.playback_state_changed.connect(player_bar.set_playback_state)
+        self._player.playback_state_changed.connect(self._telegram.set_network_monitor_active)
         self._player.playback_rate_changed.connect(player_bar.set_playback_rate)
         self._player.position_changed.connect(player_bar.set_position)
         self._player.duration_changed.connect(player_bar.set_duration)
         self._player.metadata_updated.connect(player_bar.update_metadata)
 
+        # Precision Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
+        # System Tray Integration
         self._tray = TrayService(self, self._player)
         self._tray.show_window_requested.connect(self._restore_window)
         self._tray.quit_requested.connect(self._quit_application)
 
+        # Connect Telegram Service signals
         self._telegram.auth_state_changed.connect(self._on_auth_state_changed)
         self._telegram.auth_error.connect(self._login_view.show_error)
         self._telegram.connection_state_changed.connect(self._login_view.set_connection_status)
@@ -133,6 +137,7 @@ class MainWindow(QMainWindow):
         # Emit cached state (channels + user avatar) instantly
         self._telegram.load_cached_state()
 
+        # Apply saved proxy automatically on launch
         self._apply_saved_proxy()
 
     def _apply_saved_proxy(self) -> None:
@@ -145,17 +150,23 @@ class MainWindow(QMainWindow):
                 self._telegram.set_http_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        """Minimize to system tray and switch Telegram status to offline to save data."""
         if not self._is_quitting:
             event.ignore()
             self.hide()
+            self._telegram.set_online_status(False)  # Set offline in tray to save bandwidth
+            self._telegram.set_network_monitor_active(False)
             self._tray.show_message("TMusic", "برنامه در پس‌زمینه در حال پخش است 🎵")
         else:
             event.accept()
 
     def _restore_window(self) -> None:
+        """Restore window from tray and switch status back online."""
         self.show()
         self.raise_()
         self.activateWindow()
+        self._telegram.set_online_status(True)
+        self._telegram.set_network_monitor_active(True)
 
     def _quit_application(self) -> None:
         self._is_quitting = True
@@ -168,6 +179,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_perform_logout(self) -> None:
+        """Complete Factory Reset: Purge all session data and exit app cleanly."""
         logger.info("Performing factory reset logout: purging data directory...")
         self._is_quitting = True
 
@@ -303,6 +315,7 @@ def main() -> int:
 
     exit_code = app.exec()
 
+    # Clean shutdown
     stream_server.stop()
     telegram_service.stop()
     tdlib_adapter.close()

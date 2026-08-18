@@ -8,7 +8,7 @@ logger = logging.getLogger("tmusic.telegram.media")
 
 
 class MediaHandler:
-    """Manages audio file streaming downloads, HD cover art, and path registry."""
+    """Manages high-priority audio file streaming downloads and boosted HD cover art downloads."""
 
     def __init__(
         self,
@@ -26,6 +26,10 @@ class MediaHandler:
         self._downloading_audio_files: set[int] = set()
         self._cover_file_to_track_id: dict[int, str] = {}
 
+    @property
+    def has_active_downloads(self) -> bool:
+        return bool(self._downloading_audio_files or self._cover_file_to_track_id)
+
     def get_downloaded_path(self, file_id: int) -> str | None:
         path = self._file_id_to_path.get(file_id)
         if path and Path(path).exists():
@@ -33,7 +37,6 @@ class MediaHandler:
         return None
 
     def register_completed_path(self, file_id: int, path: str) -> None:
-        """Register or update active valid path for a file ID."""
         if path and Path(path).exists():
             self._file_id_to_path[file_id] = path
 
@@ -43,7 +46,7 @@ class MediaHandler:
             return
 
         self._downloading_audio_files.add(file_id)
-        logger.info("Requesting TDLib download for file ID: %d", file_id)
+        logger.info("Requesting TDLib download for file ID: %d (Priority 32)", file_id)
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
@@ -69,6 +72,7 @@ class MediaHandler:
         })
 
     def download_cover_file(self, track_id: str, file_id: int) -> None:
+        """Boosted priority (16) for ultra-fast album artwork rendering."""
         if not file_id:
             return
 
@@ -81,7 +85,7 @@ class MediaHandler:
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
-            "priority": 4,
+            "priority": 16,  # Boosted priority for rapid thumbnail downloads
             "offset": 0,
             "limit": 0,
             "synchronous": False,
@@ -98,14 +102,14 @@ class MediaHandler:
         if is_completed and path:
             self._file_id_to_path[file_id] = path
 
-            # 1. HD cover art check
-            track_id = self._cover_file_to_track_id.get(file_id)
+            track_id = self._cover_file_to_track_id.pop(file_id, None)
             if track_id:
                 self._on_cover_completed(track_id, path)
 
-            # 2. Audio track completion notification
-            self._downloading_audio_files.discard(file_id)
-            self._on_audio_completed(file_id, path)
+            if file_id in self._downloading_audio_files:
+                self._downloading_audio_files.discard(file_id)
+                logger.info("Audio file %d download completed: %s", file_id, path)
+                self._on_audio_completed(file_id, path)
 
         elif local.get("is_downloading_active", False):
             self._on_audio_progress(file_id, downloaded, total)
