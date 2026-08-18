@@ -6,6 +6,7 @@ from typing import Any
 from PySide6.QtCore import QObject, Signal
 
 from app.config import AppConfig
+from app.core.keywords import is_music_title
 from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
@@ -15,24 +16,6 @@ from app.telegram.enums import AuthState
 from app.telegram.worker import TDLibWorker
 
 logger = logging.getLogger("tmusic.telegram.service")
-
-MUSIC_TITLE_KEYWORDS = (
-    "موزیک",
-    "موزيك",
-    "آهنگ",
-    "اهنگ",
-    "موسیقی",
-    "music",
-    "playlist",
-    "پلی لیست",
-    "پلی‌لیست",
-    "پلیلیست",
-    "remix",
-    "ریمیکس",
-    "podcast",
-    "پادکست",
-    "ترانه",
-)
 
 
 @dataclass(slots=True)
@@ -121,31 +104,6 @@ class TelegramService(QObject):
         if path and Path(path).exists():
             return path
         return None
-
-    def _is_music_chat_title(self, title: str) -> bool:
-        if not title:
-            return False
-
-        t_clean = (
-            title.lower()
-            .replace("\u200c", " ")
-            .replace("ي", "ی")
-            .replace("ك", "ک")
-            .replace("آ", "ا")
-        )
-        t_nospaces = t_clean.replace(" ", "")
-
-        for kw in MUSIC_TITLE_KEYWORDS:
-            kw_clean = (
-                kw.lower()
-                .replace("\u200c", " ")
-                .replace("ي", "ی")
-                .replace("ك", "ک")
-                .replace("آ", "ا")
-            )
-            if kw_clean in t_clean or kw_clean.replace(" ", "") in t_nospaces:
-                return True
-        return False
 
     def start(self) -> None:
         if not self._adapter.is_loaded:
@@ -262,7 +220,7 @@ class TelegramService(QObject):
                     self._raw_chats[chat_id]["title"] = new_title
 
                 if chat_id in self._owned_chats:
-                    if self._is_music_chat_title(new_title):
+                    if is_music_title(new_title):
                         old = self._owned_chats[chat_id]
                         self._owned_chats[chat_id] = OwnedChat(
                             id=old.id,
@@ -375,7 +333,7 @@ class TelegramService(QObject):
             return
 
         title = chat.get("title", "")
-        if not self._is_music_chat_title(title):
+        if not is_music_title(title):
             return
 
         chat_type = chat.get("type", {})
@@ -439,7 +397,7 @@ class TelegramService(QObject):
         if chat_id in self._owned_chats:
             return
 
-        if not self._is_music_chat_title(title):
+        if not is_music_title(title):
             return
 
         owned_chat = OwnedChat(
@@ -481,7 +439,6 @@ class TelegramService(QObject):
         })
 
     def download_cover(self, track_id: str, file_id: int) -> None:
-        """Download high-resolution album cover thumbnail with low priority."""
         if not file_id:
             return
 
@@ -494,7 +451,7 @@ class TelegramService(QObject):
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
-            "priority": 4,  # Light priority so audio streams stay faster
+            "priority": 4,
             "offset": 0,
             "limit": 0,
             "synchronous": False,
@@ -511,12 +468,10 @@ class TelegramService(QObject):
         if is_completed and path:
             self._file_id_to_path[file_id] = path
 
-            # 1. Check if this is an HD album cover
             track_id = self._cover_file_to_track_id.get(file_id)
             if track_id:
                 self.cover_downloaded.emit(track_id, path)
 
-            # 2. Check if this is an audio track
             if file_id in self._downloading_files:
                 self._downloading_files.discard(file_id)
                 logger.info("File ID %d download completed! Path: %s", file_id, path)
@@ -587,7 +542,6 @@ class TelegramService(QObject):
                 file_id = file_obj.get("id", 0)
                 path = local_file.get("path", "")
 
-                # 1. Preview minithumbnail (Instant low-res)
                 minithumb = audio.get("album_cover_minithumbnail")
                 minithumb_data: bytes | None = None
                 if minithumb and "data" in minithumb:
@@ -596,7 +550,6 @@ class TelegramService(QObject):
                     except Exception:
                         minithumb_data = None
 
-                # 2. HD Album Cover Thumbnail File (300x300+ Sharp)
                 hd_thumb = audio.get("album_cover_thumbnail") or audio.get("thumbnail")
                 cover_file_id = 0
                 cover_path = None

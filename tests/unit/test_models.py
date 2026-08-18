@@ -1,6 +1,8 @@
 from app.models.track import Track
 from app.models.chat import OwnedChat
 from app.models.user import TelegramUser
+from app.core.keywords import MusicKeyword, is_music_title
+
 
 
 def test_track_formatting() -> None:
@@ -58,3 +60,21 @@ def test_owned_chat_type_display() -> None:
 
     group = OwnedChat(id=200, title="Music Group", is_channel=False)
     assert group.type_display == "سوپرگروه"
+
+def test_music_keywords_multilingual_matching() -> None:
+    """Verify multilingual support (Persian, English, Turkish, Russian, Spanish, etc.)."""
+    # Persian
+    assert is_music_title("کانال موزیک من") is True
+    assert is_music_title("آهنگ‌های ماندگار") is True
+    assert is_music_title("پلی‌لیست اختصاصی") is True
+    assert is_music_title("پادکست رادیو چهرازی") is True
+
+    # English
+    assert is_music_title("My Best Music") is True
+    assert is_music_title("Top 50 Playlist") is True
+    assert is_music_title("Official Soundtracks") is True
+
+    # Non-music chats
+    assert is_music_title("اسناد و مدارک شرکت") is False
+    assert is_music_title("گروه ترید و ارز دیجیتال") is False
+    assert is_music_title("Family Backup Photos") is False
