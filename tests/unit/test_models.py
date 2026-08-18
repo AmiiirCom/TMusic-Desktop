@@ -2,6 +2,7 @@ from app.models.track import Track
 from app.models.chat import OwnedChat
 from app.models.user import TelegramUser
 from app.core.keywords import MusicKeyword, is_music_title
+from app.core.metadata import LYRICS_KEY_REGEX
 
 
 
@@ -78,3 +79,26 @@ def test_music_keywords_multilingual_matching() -> None:
     assert is_music_title("اسناد و مدارک شرکت") is False
     assert is_music_title("گروه ترید و ارز دیجیتال") is False
     assert is_music_title("Family Backup Photos") is False
+    
+def test_lyrics_key_regex_patterns() -> None:
+    """Verify that LYRICS_KEY_REGEX matches all required variations and rejects unrelated tags."""
+    # Positive matches
+    assert LYRICS_KEY_REGEX.match("lyrics") is not None
+    assert LYRICS_KEY_REGEX.match("lyric") is not None
+    assert LYRICS_KEY_REGEX.match("lyrics-eng") is not None
+    assert LYRICS_KEY_REGEX.match("lyrics-xxx") is not None
+    assert LYRICS_KEY_REGEX.match("lyric-eng") is not None
+    assert LYRICS_KEY_REGEX.match("lyrics-fas") is not None
+    assert LYRICS_KEY_REGEX.match("lyrics-fra") is not None
+    assert LYRICS_KEY_REGEX.match("lyrics-deu") is not None
+    assert LYRICS_KEY_REGEX.match("lyric-custom_language") is not None
+    assert LYRICS_KEY_REGEX.match("unsyncedlyrics") is not None
+    assert LYRICS_KEY_REGEX.match("unsynced_lyrics") is not None
+    assert LYRICS_KEY_REGEX.match("unsynced lyrics") is not None
+    assert LYRICS_KEY_REGEX.match("text") is not None
+
+    # Negative non-lyrics matches
+    assert LYRICS_KEY_REGEX.match("title") is None
+    assert LYRICS_KEY_REGEX.match("artist") is None
+    assert LYRICS_KEY_REGEX.match("album") is None
+    assert LYRICS_KEY_REGEX.match("comment") is None

@@ -1,10 +1,12 @@
 import base64
+from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.config import AppConfig
+from app.core.keywords import is_music_title
 from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
@@ -20,8 +22,17 @@ from app.telegram.worker import TDLibWorker
 logger = logging.getLogger("tmusic.telegram.service")
 
 
+@dataclass(slots=True)
+class ChatTrackPaginationState:
+    chat_id: int
+    tracks: list[Track] = field(default_factory=list)
+    next_from_message_id: int = 0
+    is_loading: bool = False
+    has_more: bool = True
+
+
 class TelegramService(QObject):
-    """100% Pure Event-Driven Telegram service responding in real-time to push updates."""
+    """Event-Driven Telegram service with direct header byte inspection and real-time updates."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -89,7 +100,7 @@ class TelegramService(QObject):
             on_tracks_deleted=self.tracks_deleted.emit,
         )
 
-        # 2. Network Stats Poller Timer (Active only during playback/download)
+        # 2. Network Stats Poller Timer
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
@@ -137,6 +148,25 @@ class TelegramService(QObject):
     def register_downloaded_path(self, file_id: int, path: str) -> None:
         self._media.register_completed_path(file_id, path)
 
+    def get_file_header_bytes(self, file_id: int, size: int = 131072) -> bytes | None:
+        """Fetch initial header bytes from TDLib cache to parse embedded ID3 lyrics and tags."""
+        if not self._adapter.is_loaded:
+            return None
+        res = self._adapter.request_sync({
+            "@type": "readFilePart",
+            "file_id": file_id,
+            "offset": 0,
+            "count": size,
+        }, timeout=0.5)
+        if res and res.get("@type") == "data":
+            data_b64 = res.get("data", "")
+            if data_b64:
+                try:
+                    return base64.b64decode(data_b64)
+                except Exception:
+                    pass
+        return None
+
     def start(self) -> None:
         if not self._adapter.is_loaded:
             logger.error("Cannot start TelegramService: TDLib is not loaded")
@@ -146,7 +176,7 @@ class TelegramService(QObject):
         self._worker = TDLibWorker(self._adapter)
         self._worker.update_received.connect(self._handle_update)
         self._worker.start()
-        logger.info("TelegramService Event-Driven Engine started")
+        logger.info("TelegramService started")
 
     def _poll_network_statistics(self) -> None:
         if self._adapter.is_loaded:
@@ -199,11 +229,9 @@ class TelegramService(QObject):
                 state = update.get("state", {}).get("@type", "")
                 self.connection_state_changed.emit(state)
 
-            # Live: New track posted in any channel
             case "updateNewMessage":
                 self._tracks.process_new_message(update.get("message", {}))
 
-            # Live: Track deleted in channel
             case "updateDeleteMessages":
                 is_permanent = update.get("is_permanent", True)
                 from_cache = update.get("from_cache", False)
@@ -212,7 +240,6 @@ class TelegramService(QObject):
                     message_ids = update.get("message_ids", [])
                     self._tracks.process_delete_messages(chat_id, message_ids)
 
-            # Live: Download progress or completed
             case "updateFile":
                 file_obj = update.get("file", {})
                 file_id = file_obj.get("id", 0)
@@ -236,7 +263,6 @@ class TelegramService(QObject):
 
                 self._media.process_file_update(file_obj)
 
-            # Live: Profile or User changed
             case "user":
                 self._extract_user(update, is_self=True)
 
@@ -246,7 +272,6 @@ class TelegramService(QObject):
                 if self._my_user_id == 0 or user_id == self._my_user_id:
                     self._extract_user(user_obj, is_self=True)
 
-            # Live: Channel added or changed
             case "chats":
                 for cid in update.get("chat_ids", []):
                     self._adapter.send({"@type": "getChat", "chat_id": cid})

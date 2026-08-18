@@ -15,7 +15,7 @@ logger = logging.getLogger("tmusic.player.service")
 
 
 class PlayerService(QObject):
-    """Audio playback engine with offline playback resilience and network drop protection."""
+    """Audio playback engine with instant ID3 lyrics parsing during streaming and gapless prefetching."""
 
     track_changed = Signal(object)
     playback_state_changed = Signal(bool)
@@ -124,7 +124,7 @@ class PlayerService(QObject):
         self._playlist = [t for t in self._playlist if t.id not in del_set]
 
         if self._current_track and self._current_track.id in del_set:
-            logger.info("Active track was deleted from Telegram. Stopping playback.")
+            logger.info("Active track was deleted from Telegram channel. Halting playback.")
             self.stop()
         elif self._current_track:
             self._update_current_index(self._current_track.id)
@@ -179,26 +179,26 @@ class PlayerService(QObject):
 
         self._cleanup_inactive_temp_files()
 
-        # 1. Offline & Cache Check: Clean TMusicDownloads
+        # 1. Clean TMusicDownloads Check
         clean_file = self._get_clean_download_destination(track)
         if clean_file.exists() and clean_file.stat().st_size > 0:
             self._cached_paths[track.file_id] = str(clean_file)
             self._telegram.register_downloaded_path(track.file_id, str(clean_file))
-            logger.info("⚡ Playing offline from TMusicDownloads: %s", clean_file)
+            logger.info("⚡ Instant play from clean TMusicDownloads: %s", clean_file)
             self._start_playback_source(QUrl.fromLocalFile(str(clean_file.resolve())))
             return
 
         # 2. Fallback Path Check
         cached_path = self._cached_paths.get(track.file_id) or self._telegram.get_downloaded_path(track.file_id)
         if cached_path and Path(cached_path).exists() and Path(cached_path).stat().st_size > 0:
-            logger.info("Playing from fallback cache: %s", cached_path)
+            logger.info("Playing from fallback cache path: %s", cached_path)
             self._start_playback_source(QUrl.fromLocalFile(str(Path(cached_path).resolve())))
             return
 
-        # 3. Progressive Live Streaming
+        # 3. Progressive Stream
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
-            logger.info("⚡ Progressive Stream starting: %s", stream_url)
+            logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
             self._start_playback_source(QUrl(stream_url))
         else:
             self._telegram.download_file(track.file_id)
@@ -282,7 +282,15 @@ class PlayerService(QObject):
     @Slot()
     def _on_media_metadata_changed(self) -> None:
         local_path = self._cached_paths.get(self._current_track.file_id) if self._current_track else None
-        self._current_metadata = extract_metadata_from_player(self._player, local_path)
+        
+        # Read header bytes from stream if not yet saved on disk
+        header_bytes = None
+        if not (local_path and Path(local_path).exists()) and self._current_track:
+            header_bytes = self._telegram.get_file_header_bytes(self._current_track.file_id)
+
+        self._current_metadata = extract_metadata_from_player(
+            self._player, local_file_path=local_path, header_bytes=header_bytes
+        )
         self.metadata_updated.emit(self._current_metadata)
 
     @Slot(int)
@@ -297,7 +305,6 @@ class PlayerService(QObject):
 
     @Slot(QMediaPlayer.Error, str)
     def _on_player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
-        """Handle media player network drop or decode errors gracefully."""
         logger.warning("Media player encountered error (%s): %s", error, error_string)
         self.error_occurred.emit(error_string)
         self.playback_state_changed.emit(False)
@@ -338,7 +345,7 @@ class PlayerService(QObject):
                         self._pending_temp_cleanup[file_id] = internal_path
 
             except Exception as exc:
-                logger.warning("Could not export audio to %s: %s", dest_file, exc)
+                logger.warning("Could not export clean audio to %s: %s", dest_file, exc)
                 self._cached_paths[file_id] = str(internal_path)
                 self._telegram.register_downloaded_path(file_id, str(internal_path))
 
