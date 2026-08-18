@@ -88,12 +88,11 @@ def create_circular_avatar_pixmap(
 
 
 class MainView(QWidget):
-    """Telegram Desktop styled main dashboard view with live deletions and delta sync."""
+    """Telegram Desktop styled main dashboard view with 100% Real-time Event Push updates."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
     load_more_tracks_requested = Signal(object)
-    refresh_requested = Signal()
     settings_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -142,8 +141,8 @@ class MainView(QWidget):
             QPushButton#btnHeaderAction {
                 background-color: #17212b;
                 color: #6ab3f3;
-                font-size: 13px;
-                padding: 6px 8px;
+                font-size: 14px;
+                padding: 6px 10px;
                 border-radius: 6px;
                 border: 1px solid #2f3e50;
             }
@@ -155,25 +154,22 @@ class MainView(QWidget):
 
         user_layout = QHBoxLayout(user_header)
         user_layout.setContentsMargins(14, 10, 14, 10)
-        user_layout.setSpacing(8)
+        user_layout.setSpacing(10)
         user_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
+        # Avatar Label
         self.user_avatar = QLabel()
         self.user_avatar.setObjectName("userAvatar")
         self.user_avatar.setFixedSize(42, 42)
         self.user_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.user_avatar.setPixmap(create_circular_avatar_pixmap(None, None, "U", 42))
 
+        # Name Label
         self.user_name_label = QLabel("کاربر تلگرام")
         self.user_name_label.setObjectName("userName")
         self.user_name_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
-        self.btn_refresh = QPushButton("🔄")
-        self.btn_refresh.setObjectName("btnHeaderAction")
-        self.btn_refresh.setToolTip("همگام‌سازی و بررسی تغییرات جدید (Refresh)")
-        self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_refresh.clicked.connect(self.refresh_requested.emit)
-
+        # Settings Button (⚙️)
         btn_settings = QPushButton("⚙️")
         btn_settings.setObjectName("btnHeaderAction")
         btn_settings.setToolTip("تنظیمات و حافظه")
@@ -182,7 +178,6 @@ class MainView(QWidget):
 
         user_layout.addWidget(self.user_avatar)
         user_layout.addWidget(self.user_name_label, stretch=1)
-        user_layout.addWidget(self.btn_refresh)
         user_layout.addWidget(btn_settings)
         sidebar_layout.addWidget(user_header)
 
@@ -325,7 +320,6 @@ class MainView(QWidget):
         self.track_list.prepend_tracks(new_tracks)
 
     def remove_tracks(self, chat_id: int, deleted_track_ids: list[str]) -> None:
-        """Remove deleted tracks only if they belong to the active chat."""
         if self._active_chat and self._active_chat.id == chat_id:
             self.track_list.remove_tracks(deleted_track_ids)
 

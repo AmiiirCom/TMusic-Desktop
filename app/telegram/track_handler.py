@@ -19,7 +19,7 @@ class ChatTrackPaginationState:
 
 
 class TrackHandler:
-    """Manages audio track searching, chunked pagination, delta-syncing, and live deletions."""
+    """Event-driven audio track manager responding in real-time to TDLib updates."""
 
     def __init__(
         self,
@@ -66,24 +66,27 @@ class TrackHandler:
             "@extra": f"load_tracks_{chat_id}_{is_initial_str}",
         })
 
-    def sync_chat_tracks(self, chat_id: int) -> None:
-        if chat_id not in self._track_pagination:
-            self.load_chat_tracks(chat_id, reset=True, chunk_size=40)
+    def process_new_message(self, message: dict[str, Any]) -> None:
+        """Real-time event: React immediately when a new audio track is posted in Telegram."""
+        chat_id = message.get("chat_id", 0)
+        state = self._track_pagination.get(chat_id)
+        if not state:
             return
 
-        self._adapter.send({
-            "@type": "searchChatMessages",
-            "chat_id": chat_id,
-            "query": "",
-            "from_message_id": 0,
-            "offset": 0,
-            "limit": 30,
-            "filter": {"@type": "searchMessagesFilterAudio"},
-            "@extra": f"sync_tracks_{chat_id}",
-        })
+        parsed_tracks = self._parse_message_tracks(chat_id, [message])
+        if not parsed_tracks:
+            return
+
+        new_track = parsed_tracks[0]
+        existing_ids = {t.id for t in state.tracks}
+
+        if new_track.id not in existing_ids:
+            logger.info("⚡ Live Push Event: New track posted in chat %d -> %s", chat_id, new_track.display_title)
+            state.tracks.insert(0, new_track)
+            self._on_delta_tracks_prepended(chat_id, [new_track])
 
     def process_delete_messages(self, chat_id: int, message_ids: list[int]) -> None:
-        """Handle real-time deletion of messages from Telegram channel."""
+        """Real-time event: React immediately when tracks are deleted in Telegram."""
         state = self._track_pagination.get(chat_id)
         if not state or not state.tracks:
             return
@@ -93,7 +96,7 @@ class TrackHandler:
         state.tracks = [t for t in state.tracks if t.id not in del_track_ids]
 
         if len(state.tracks) < original_count:
-            logger.info("🗑️ Removed %d deleted tracks from active chat %d", original_count - len(state.tracks), chat_id)
+            logger.info("🗑️ Live Push Event: Removed %d deleted tracks from chat %d", original_count - len(state.tracks), chat_id)
             self._on_tracks_deleted(chat_id, list(del_track_ids))
 
     def _parse_message_tracks(self, chat_id: int, messages: list[dict[str, Any]]) -> list[Track]:
@@ -231,18 +234,3 @@ class TrackHandler:
         else:
             state.tracks.extend(chunk_tracks)
             self._on_lazy_chunk_appended(chat_id, chunk_tracks, state.has_more)
-
-    def process_sync_response(self, chat_id: int, messages: list[dict[str, Any]]) -> None:
-        state = self._track_pagination.get(chat_id)
-        if not state or not state.tracks:
-            return
-
-        latest_tracks = self._parse_message_tracks(chat_id, messages)
-        existing_ids = {t.id for t in state.tracks}
-
-        newly_added = [t for t in latest_tracks if t.id not in existing_ids]
-
-        if newly_added:
-            logger.info("✨ Found %d brand new tracks via Delta-Sync for chat %d!", len(newly_added), chat_id)
-            state.tracks = newly_added + state.tracks
-            self._on_delta_tracks_prepended(chat_id, newly_added)

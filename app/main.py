@@ -70,7 +70,6 @@ class MainWindow(QMainWindow):
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
-        self._main_view.refresh_requested.connect(self._on_manual_refresh)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
 
         # 2. Login View
@@ -201,9 +200,6 @@ class MainWindow(QMainWindow):
                 logger.warning("Could not wipe data directory: %s", exc)
 
         QApplication.quit()
-
-    def _on_manual_refresh(self) -> None:
-        self._telegram.sync_all()
 
     def _open_lyrics_dialog(self) -> None:
         track = self._player.current_track
