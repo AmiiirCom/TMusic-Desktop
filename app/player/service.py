@@ -14,6 +14,7 @@ class PlayerService(QObject):
 
     track_changed = Signal(Track)
     playback_state_changed = Signal(bool)
+    playback_rate_changed = Signal(float)
     position_changed = Signal(int)
     duration_changed = Signal(int)
     download_progress = Signal(int, int)
@@ -40,6 +41,7 @@ class PlayerService(QObject):
         self._player.positionChanged.connect(self.position_changed.emit)
         self._player.durationChanged.connect(self.duration_changed.emit)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
+        self._player.playbackRateChanged.connect(self.playback_rate_changed.emit)
         self._player.mediaStatusChanged.connect(self._on_media_status_changed)
 
         # Wire Telegram download signals
@@ -49,6 +51,10 @@ class PlayerService(QObject):
     @property
     def is_playing(self) -> bool:
         return self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+
+    @property
+    def playback_rate(self) -> float:
+        return self._player.playbackRate()
 
     @property
     def current_track(self) -> Track | None:
@@ -62,7 +68,6 @@ class PlayerService(QObject):
             self._update_current_index(self._current_track.id)
 
     def append_to_playlist(self, new_tracks: list[Track]) -> None:
-        """Append newly lazy-loaded tracks to active playback queue."""
         existing_ids = {t.id for t in self._playlist}
         unique_new = [t for t in new_tracks if t.id not in existing_ids]
         self._playlist.extend(unique_new)
@@ -97,7 +102,7 @@ class PlayerService(QObject):
 
     def _start_playback(self, file_path: str) -> None:
         resolved_path = Path(file_path).resolve()
-        logger.info("Starting audio playback: %s", resolved_path)
+        logger.info("Starting audio playback: %s (Rate: %.2fx)", resolved_path, self._player.playbackRate())
         self._player.setSource(QUrl.fromLocalFile(str(resolved_path)))
         self._player.play()
 
@@ -129,6 +134,13 @@ class PlayerService(QObject):
     def set_volume(self, volume_percent: int) -> None:
         vol = max(0, min(100, volume_percent)) / 100.0
         self._audio_output.setVolume(vol)
+
+    def set_playback_rate(self, rate: float) -> None:
+        """Set audio playback rate (0.75, 1.0, 1.25, 1.5, 1.75)."""
+        clamped_rate = max(0.5, min(2.0, rate))
+        logger.info("Setting audio playback rate to: %.2fx", clamped_rate)
+        self._player.setPlaybackRate(clamped_rate)
+        self.playback_rate_changed.emit(clamped_rate)
 
     def set_muted(self, muted: bool) -> None:
         self._audio_output.setMuted(muted)

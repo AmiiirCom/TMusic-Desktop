@@ -23,6 +23,7 @@ class ProxySettings:
 class UserPreferences:
     volume: int = 80
     is_muted: bool = False
+    playback_rate: float = 1.0
     minimize_to_tray: bool = True
     last_chat_id: int = 0
     proxy: ProxySettings = field(default_factory=ProxySettings)
@@ -63,6 +64,7 @@ class SettingsService:
             self._preferences = UserPreferences(
                 volume=data.get("volume", 80),
                 is_muted=data.get("is_muted", False),
+                playback_rate=float(data.get("playback_rate", 1.0)),
                 minimize_to_tray=data.get("minimize_to_tray", True),
                 last_chat_id=data.get("last_chat_id", 0),
                 proxy=proxy,
@@ -77,6 +79,7 @@ class SettingsService:
         payload: dict[str, Any] = {
             "volume": self._preferences.volume,
             "is_muted": self._preferences.is_muted,
+            "playback_rate": self._preferences.playback_rate,
             "minimize_to_tray": self._preferences.minimize_to_tray,
             "last_chat_id": self._preferences.last_chat_id,
             "proxy": asdict(self._preferences.proxy),
@@ -85,7 +88,6 @@ class SettingsService:
         self._crypto.save_encrypted_json(self._settings_file, payload)
 
     def set_cached_music_chats(self, chats: list[OwnedChat]) -> None:
-        """Cache discovered music channels for instant subsequent launches."""
         self._preferences.cached_music_chats = [
             {
                 "id": c.id,
@@ -99,7 +101,6 @@ class SettingsService:
         self.save()
 
     def get_cached_music_chats(self) -> list[OwnedChat]:
-        """Retrieve instantly loaded music channels from disk cache."""
         return [
             OwnedChat(
                 id=c["id"],
@@ -121,6 +122,10 @@ class SettingsService:
 
     def set_volume(self, volume: int) -> None:
         self._preferences.volume = volume
+        self.save()
+
+    def set_playback_rate(self, rate: float) -> None:
+        self._preferences.playback_rate = rate
         self.save()
 
     def set_last_chat(self, chat_id: int) -> None:

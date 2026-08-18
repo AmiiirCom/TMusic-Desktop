@@ -1,10 +1,11 @@
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -13,13 +14,14 @@ from PySide6.QtWidgets import (
 
 from app.models.track import Track
 
+SPEED_OPTIONS = (0.75, 1.0, 1.25, 1.5, 1.75)
+
 
 def create_playerbar_cover_pixmap(
     minithumb_data: bytes | None = None,
     cover_path: str | None = None,
     size: int = 48,
 ) -> QPixmap:
-    """Render high-resolution album cover for bottom player bar."""
     target = QPixmap(size, size)
     target.fill(QColor(0, 0, 0, 0))
 
@@ -33,7 +35,6 @@ def create_playerbar_cover_pixmap(
 
     has_drawn = False
 
-    # 1. Prefer HD cover file
     if cover_path and Path(cover_path).exists():
         src = QPixmap(str(cover_path))
         if not src.isNull():
@@ -48,7 +49,6 @@ def create_playerbar_cover_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
             has_drawn = True
 
-    # 2. Preview minithumbnail
     if not has_drawn and minithumb_data:
         src = QPixmap()
         if src.loadFromData(minithumb_data):
@@ -63,7 +63,6 @@ def create_playerbar_cover_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
             has_drawn = True
 
-    # 3. Default fallback
     if not has_drawn:
         painter.fillRect(0, 0, size, size, QColor("#2b5278"))
         painter.setPen(QColor("#ffffff"))
@@ -74,13 +73,14 @@ def create_playerbar_cover_pixmap(
 
 
 class PlayerBar(QFrame):
-    """Telegram Desktop styled bottom audio player bar with HD artwork cover."""
+    """Telegram Desktop styled bottom audio player bar with speed controls."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
     previous_clicked = Signal()
     seek_requested = Signal(int)
     volume_changed = Signal(int)
+    speed_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -89,6 +89,7 @@ class PlayerBar(QFrame):
         self._current_track: Track | None = None
         self._is_slider_dragging = False
         self._duration_ms = 0
+        self._current_speed = 1.0
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -123,6 +124,19 @@ class PlayerBar(QFrame):
             QPushButton#btnPlayPause:hover {
                 background-color: #1d72b8;
             }
+            QPushButton#btnSpeed {
+                background-color: #242f3d;
+                color: #6ab3f3;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 4px 8px;
+                border-radius: 6px;
+                min-width: 44px;
+            }
+            QPushButton#btnSpeed:hover {
+                background-color: #2f3e50;
+                color: #ffffff;
+            }
             QSlider::groove:horizontal {
                 height: 4px;
                 background: #242f3d;
@@ -145,7 +159,7 @@ class PlayerBar(QFrame):
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(16)
 
-        # 1. Left Section: Track Artwork Cover & Info
+        # 1. Left Section: Artwork Cover & Info
         info_container = QWidget(self)
         info_container.setFixedWidth(260)
         info_layout = QHBoxLayout(info_container)
@@ -180,6 +194,7 @@ class PlayerBar(QFrame):
         center_layout.setSpacing(4)
         center_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # Controls Buttons
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(12)
         controls_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -226,11 +241,18 @@ class PlayerBar(QFrame):
 
         layout.addWidget(center_container, stretch=1)
 
-        # 3. Right Section: Volume Slider
-        vol_container = QWidget(self)
-        vol_container.setFixedWidth(160)
-        vol_layout = QHBoxLayout(vol_container)
-        vol_layout.setSpacing(6)
+        # 3. Right Section: Speed Button & Volume Slider
+        right_container = QWidget(self)
+        right_container.setFixedWidth(220)
+        right_layout = QHBoxLayout(right_container)
+        right_layout.setSpacing(10)
+
+        # Playback Speed Button (e.g. 1.0x, 1.5x)
+        self.btn_speed = QPushButton("1.0x")
+        self.btn_speed.setObjectName("btnSpeed")
+        self.btn_speed.setToolTip("سرعت پخش")
+        self.btn_speed.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_speed.clicked.connect(self._open_speed_menu)
 
         vol_icon = QLabel("🔊")
         vol_icon.setStyleSheet("font-size: 14px;")
@@ -240,9 +262,51 @@ class PlayerBar(QFrame):
         self.vol_slider.setValue(80)
         self.vol_slider.valueChanged.connect(self.volume_changed.emit)
 
-        vol_layout.addWidget(vol_icon)
-        vol_layout.addWidget(self.vol_slider)
-        layout.addWidget(vol_container)
+        right_layout.addWidget(self.btn_speed)
+        right_layout.addWidget(vol_icon)
+        right_layout.addWidget(self.vol_slider)
+        layout.addWidget(right_container)
+
+    def _open_speed_menu(self) -> None:
+        """Open compact Telegram-styled speed selection popup menu."""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #17212b;
+                color: #ffffff;
+                border: 1px solid #2f3e50;
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 24px;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+            QMenu::item:selected {
+                background-color: #2481cc;
+            }
+        """)
+
+        for speed in SPEED_OPTIONS:
+            label = f"{speed}x (عادی)" if speed == 1.0 else f"{speed}x"
+            action = QAction(label, menu)
+            if abs(speed - self._current_speed) < 0.01:
+                action.setText(f"✓  {label}")
+            action.triggered.connect(lambda checked=False, s=speed: self._on_select_speed(s))
+            menu.addAction(action)
+
+        # Position menu directly above speed button
+        btn_pos = self.btn_speed.mapToGlobal(QPoint(0, 0))
+        menu.exec(QPoint(btn_pos.x(), btn_pos.y() - menu.sizeHint().height() - 6))
+
+    def _on_select_speed(self, speed: float) -> None:
+        self.set_playback_rate(speed)
+        self.speed_changed.emit(speed)
+
+    def set_playback_rate(self, speed: float) -> None:
+        self._current_speed = speed
+        self.btn_speed.setText(f"{speed}x")
 
     def set_track(self, track: Track) -> None:
         self._current_track = track

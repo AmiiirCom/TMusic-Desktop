@@ -73,22 +73,29 @@ class MainWindow(QMainWindow):
         player_bar.previous_clicked.connect(self._player.play_previous)
         player_bar.seek_requested.connect(self._player.seek)
         player_bar.volume_changed.connect(self._on_volume_changed)
+        player_bar.speed_changed.connect(self._on_speed_changed)
 
-        # Restore saved volume preference
+        # Restore saved volume & speed preferences
         saved_vol = self._settings.preferences.volume
         player_bar.vol_slider.setValue(saved_vol)
         self._player.set_volume(saved_vol)
+
+        saved_speed = self._settings.preferences.playback_rate
+        player_bar.set_playback_rate(saved_speed)
+        self._player.set_playback_rate(saved_speed)
 
         # Connect PlayerService feedback with PlayerBar & TrackList UI
         self._player.track_changed.connect(player_bar.set_track)
         self._player.track_changed.connect(self._main_view.set_active_track)
         self._player.playback_state_changed.connect(player_bar.set_playback_state)
+        self._player.playback_rate_changed.connect(player_bar.set_playback_rate)
         self._player.position_changed.connect(player_bar.set_position)
         self._player.duration_changed.connect(player_bar.set_duration)
 
-        # Network meter integration
+        # Network meter & Cover integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.file_download_progress.connect(self._on_download_progress)
+        self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
         self._central_stack.addWidget(self._login_view)
         self._central_stack.addWidget(self._main_view)
@@ -106,8 +113,6 @@ class MainWindow(QMainWindow):
         self._telegram.owned_chats_loaded.connect(self._main_view.set_owned_chats)
         self._telegram.tracks_loaded.connect(self._on_initial_tracks_loaded)
         self._telegram.tracks_appended.connect(self._on_tracks_appended)
-        
-        self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
         # Emit cached music channels immediately
         self._telegram.load_cached_music_chats()
@@ -154,6 +159,11 @@ class MainWindow(QMainWindow):
     def _on_volume_changed(self, volume: int) -> None:
         self._player.set_volume(volume)
         self._settings.set_volume(volume)
+
+    @Slot(float)
+    def _on_speed_changed(self, speed: float) -> None:
+        self._player.set_playback_rate(speed)
+        self._settings.set_playback_rate(speed)
 
     @Slot(int, int, int)
     def _on_download_progress(self, file_id: int, downloaded: int, total: int) -> None:
