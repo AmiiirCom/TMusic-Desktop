@@ -4,7 +4,14 @@ import shutil
 import sys
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QGraphicsBlurEffect,
+    QMainWindow,
+    QStackedWidget,
+    QWidget,
+)
 
 from app.bootstrap import create_application
 from app.cache.service import CacheService
@@ -171,11 +178,60 @@ class MainWindow(QMainWindow):
         self._is_quitting = True
         QApplication.quit()
 
+    def exec_modal_with_backdrop(self, dialog: QDialog) -> int:
+        """Execute modal dialog with centered positioning, raised dark overlay, and quality blur."""
+        # 1. Apply High-Quality Blur Effect on the Main Window background
+        blur = QGraphicsBlurEffect(self)
+        blur.setBlurRadius(16)
+        blur.setBlurHints(QGraphicsBlurEffect.BlurHint.QualityHint)
+        self._central_stack.setGraphicsEffect(blur)
+
+        # 2. Create Dark Backdrop Overlay on top of MainWindow
+        overlay = QWidget(self)
+        overlay.setGeometry(0, 0, self.width(), self.height())
+        overlay.setStyleSheet("background-color: rgba(0, 0, 0, 165);")
+        overlay.show()
+        overlay.raise_()
+
+        # 3. Process events so background renders blur & dimming immediately
+        QApplication.processEvents()
+
+        # 4. Execute modal dialog centered
+        dialog.setParent(self, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        result = dialog.exec()
+
+        # 5. Cleanup Overlay & Remove Blur cleanly (Type-safe for Pylance)
+        overlay.hide()
+        overlay.deleteLater()
+        blur.setEnabled(False)
+        self._central_stack.setGraphicsEffect(None)  # type: ignore[arg-type]
+
+        return result
+
     def _open_settings_dialog(self) -> None:
         dialog = SettingsDialog(self._cache, self._settings, self)
         dialog.proxy_saved.connect(self._on_proxy_configured)
         dialog.logout_requested.connect(self._on_perform_logout)
-        dialog.exec()
+        self.exec_modal_with_backdrop(dialog)
+
+    def _open_lyrics_dialog(self) -> None:
+        track = self._player.current_track
+        meta = self._player.current_metadata
+        if track and meta.has_lyrics:
+            dialog = LyricsDialog(
+                title=track.display_title,
+                artist=track.display_artist,
+                lyrics=meta.lyrics,
+                parent=self,
+            )
+            self.exec_modal_with_backdrop(dialog)
+
+    def _open_track_info_dialog(self) -> None:
+        track = self._player.current_track
+        if track:
+            meta = self._player.current_metadata
+            dialog = TrackInfoDialog(track=track, metadata=meta, parent=self)
+            self.exec_modal_with_backdrop(dialog)
 
     def _on_perform_logout(self) -> None:
         logger.info("Performing factory reset logout: purging data directory...")
@@ -200,25 +256,6 @@ class MainWindow(QMainWindow):
                 logger.warning("Could not wipe data directory: %s", exc)
 
         QApplication.quit()
-
-    def _open_lyrics_dialog(self) -> None:
-        track = self._player.current_track
-        meta = self._player.current_metadata
-        if track and meta.has_lyrics:
-            dialog = LyricsDialog(
-                title=track.display_title,
-                artist=track.display_artist,
-                lyrics=meta.lyrics,
-                parent=self,
-            )
-            dialog.exec()
-
-    def _open_track_info_dialog(self) -> None:
-        track = self._player.current_track
-        if track:
-            meta = self._player.current_metadata
-            dialog = TrackInfoDialog(track=track, metadata=meta, parent=self)
-            dialog.exec()
 
     @Slot(int)
     def _on_volume_changed(self, volume: int) -> None:
@@ -258,6 +295,11 @@ class MainWindow(QMainWindow):
     def _on_tracks_prepended(self, chat_id: int, new_tracks: list[Track]) -> None:
         self._main_view.prepend_tracks(new_tracks)
         self._player.prepend_to_playlist(new_tracks)
+
+    @Slot(object, list)
+    def _on_tracks_deleted(self, chat_id: int, deleted_track_ids: list[str]) -> None:
+        self._main_view.remove_tracks(chat_id, deleted_track_ids)
+        self._player.remove_from_playlist(chat_id, deleted_track_ids)
 
     @Slot(Track)
     def _on_track_selected(self, track: Track) -> None:

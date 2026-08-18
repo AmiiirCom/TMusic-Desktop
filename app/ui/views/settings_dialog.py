@@ -2,23 +2,23 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
-    QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QVBoxLayout,
     QWidget,
 )
 
 from app.cache.service import CacheService
 from app.settings.service import SettingsService
+from app.ui.views.base_modal import BaseModalDialog
 
 
-class SettingsDialog(QDialog):
-    """Settings, Proxy, Downloads, and Account Logout dialog."""
+class SettingsDialog(BaseModalDialog):
+    """Frameless unified Settings, Proxy, and Storage management modal."""
 
     cache_cleared = Signal()
     proxy_saved = Signal(str, str, int)
@@ -30,62 +30,17 @@ class SettingsDialog(QDialog):
         settings_service: SettingsService,
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(title="تنظیمات و حافظه TMusic", parent=parent)
         self._cache = cache_service
         self._settings = settings_service
+        self.resize(440, 460)
+        self._init_body()
 
-        self.setWindowTitle("تنظیمات TMusic")
-        self.resize(440, 480)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self._init_ui()
-
-    def _init_ui(self) -> None:
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #17212b;
-                color: #ffffff;
-            }
-            QLabel {
-                color: #ffffff;
-                font-family: 'Vazirmatn', 'Segoe UI', sans-serif;
-            }
-            QLineEdit, QComboBox {
-                padding: 6px 10px;
-                border: 1px solid #2f3e50;
-                border-radius: 6px;
-                background-color: #242f3d;
-                color: #ffffff;
-                font-size: 13px;
-            }
-            QPushButton {
-                background-color: #2481cc;
-                color: white;
-                font-weight: bold;
-                padding: 8px 16px;
-                border-radius: 6px;
-                border: none;
-            }
-            QPushButton:hover { background-color: #1d72b8; }
-            QPushButton#btnSecondary {
-                background-color: #242f3d;
-                border: 1px solid #2f3e50;
-            }
-            QPushButton#btnSecondary:hover { background-color: #2f3e50; }
-            QPushButton#btnLogout {
-                background-color: #e53935;
-                font-weight: bold;
-            }
-            QPushButton#btnLogout:hover { background-color: #d32f2f; }
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(14)
-
+    def _init_body(self) -> None:
         # 1. Proxy Section
         proxy_title = QLabel("🛡️ تنظیمات پروکسی تلگرام (رمزنگاری‌شده)")
-        proxy_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #6ab3f3;")
-        layout.addWidget(proxy_title)
+        proxy_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
+        self.body_layout.addWidget(proxy_title)
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -103,60 +58,56 @@ class SettingsDialog(QDialog):
         self.proxy_port.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
         form.addRow("نوع پروکسی:", self.proxy_type)
-        form.addRow("آدرس سرور (IP):", self.proxy_server)
-        form.addRow("پورت (Port):", self.proxy_port)
-        layout.addLayout(form)
+        form.addRow("آدرس سرور:", self.proxy_server)
+        form.addRow("پورت:", self.proxy_port)
+        self.body_layout.addLayout(form)
 
         btn_save_proxy = QPushButton("ذخیره و اعمال پروکسی")
+        btn_save_proxy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_save_proxy.clicked.connect(self._on_save_proxy)
-        layout.addWidget(btn_save_proxy)
+        self.body_layout.addWidget(btn_save_proxy)
 
         # Separator line
-        sep = QLabel()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet("background-color: #242f3d;")
-        layout.addWidget(sep)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #242f3d;")
+        self.body_layout.addWidget(sep)
 
-        # 2. Downloads & Storage Section
+        # 2. Storage Section
         storage_title = QLabel("📂 محل ذخیره آهنگ‌ها (Downloads)")
-        storage_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #6ab3f3;")
-        layout.addWidget(storage_title)
+        storage_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
+        self.body_layout.addWidget(storage_title)
 
         btn_open_folder = QPushButton("📁 باز کردن پوشه TMusicDownloads")
-        btn_open_folder.setObjectName("btnSecondary")
+        btn_open_folder.setStyleSheet("background-color: #242f3d; border: 1px solid #2f3e50;")
         btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_open_folder.clicked.connect(self._on_open_downloads_folder)
-        layout.addWidget(btn_open_folder)
+        self.body_layout.addWidget(btn_open_folder)
 
         cache_layout = QHBoxLayout()
-        cache_label = QLabel("حجم آهنگ‌های ذخیره‌شده:")
+        cache_label = QLabel("حجم آهنگ‌های دانلودشده:")
         self.size_val = QLabel(self._cache.get_formatted_cache_size())
         self.size_val.setStyleSheet("font-weight: bold; color: #4fae4e;")
 
         cache_layout.addWidget(cache_label)
         cache_layout.addStretch()
         cache_layout.addWidget(self.size_val)
-        layout.addLayout(cache_layout)
+        self.body_layout.addLayout(cache_layout)
 
         # Separator line 2
-        sep2 = QLabel()
-        sep2.setFixedHeight(1)
-        sep2.setStyleSheet("background-color: #242f3d;")
-        layout.addWidget(sep2)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("color: #242f3d;")
+        self.body_layout.addWidget(sep2)
 
-        # 3. Account Actions (Logout)
+        # 3. Logout Action
         btn_logout = QPushButton("🚪 خروج از حساب کاربری تلگرام (Log Out)")
-        btn_logout.setObjectName("btnLogout")
+        btn_logout.setStyleSheet("background-color: #e53935; font-weight: bold;")
         btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_logout.clicked.connect(self._on_logout_clicked)
-        layout.addWidget(btn_logout)
+        self.body_layout.addWidget(btn_logout)
 
-        layout.addStretch()
-
-        # Close button
-        btn_close = QPushButton("بستن")
-        btn_close.clicked.connect(self.accept)
-        layout.addWidget(btn_close)
+        self.body_layout.addStretch()
 
     def _on_save_proxy(self) -> None:
         ptype = self.proxy_type.currentText()
@@ -174,7 +125,7 @@ class SettingsDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "خروج از حساب",
-            "آیا مطمئن هستید که می‌خواهید از حساب تلگرام خود خارج شوید؟",
+            "آیا مطمئن هستید؟ با خروج، نشست و کش‌ها پاک شده و برنامه بسته خواهد شد (آهنگ‌های دانلودشده در TMusicDownloads باقی می‌مانند).",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

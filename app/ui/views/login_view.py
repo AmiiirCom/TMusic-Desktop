@@ -215,9 +215,12 @@ class LoginView(QWidget):
                 self.conn_status_label.setStyleSheet("color: #e53935; font-size: 12px;")
 
     def _open_proxy_dialog(self) -> None:
-        dialog = ProxyDialog(self)
+        dialog = ProxyDialog(self.window())
         dialog.proxy_applied.connect(self.proxy_configured.emit)
-        dialog.exec()
+        if hasattr(self.window(), "exec_modal_with_backdrop"):
+            self.window().exec_modal_with_backdrop(dialog)
+        else:
+            dialog.exec()
 
     def show_phone_step(self) -> None:
         self._reset_buttons()

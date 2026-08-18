@@ -1,66 +1,27 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
-    QDialog,
     QFormLayout,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
-    QVBoxLayout,
     QWidget,
 )
 
+from app.ui.views.base_modal import BaseModalDialog
 
-class ProxyDialog(QDialog):
-    """Telegram Desktop styled Proxy settings dialog."""
 
-    proxy_applied = Signal(str, str, int)  # type, server, port
+class ProxyDialog(BaseModalDialog):
+    """Telegram Desktop styled frameless Proxy settings dialog."""
+
+    proxy_applied = Signal(str, str, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("تنظیمات پروکسی تلگرام")
-        self.resize(360, 240)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self._init_ui()
+        super().__init__(title="تنظیمات پروکسی تلگرام", parent=parent)
+        self.resize(380, 260)
+        self._init_body()
 
-    def _init_ui(self) -> None:
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #212d3b;
-                color: #ffffff;
-            }
-            QLabel {
-                color: #e4ecf2;
-                font-size: 13px;
-            }
-            QLineEdit, QComboBox {
-                padding: 8px 12px;
-                border: 1px solid #2f3e50;
-                border-radius: 6px;
-                background-color: #17212b;
-                color: #ffffff;
-                font-size: 13px;
-            }
-            QPushButton {
-                background-color: #2481cc;
-                color: white;
-                font-weight: bold;
-                padding: 8px 16px;
-                border-radius: 6px;
-                border: none;
-            }
-            QPushButton:hover { background-color: #1d72b8; }
-            QPushButton#btnCancel {
-                background-color: transparent;
-                color: #6ab3f3;
-            }
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(14)
-        layout.setContentsMargins(20, 20, 20, 20)
-
+    def _init_body(self) -> None:
         form = QFormLayout()
         form.setSpacing(10)
 
@@ -74,27 +35,30 @@ class ProxyDialog(QDialog):
 
         self.port_input = QLineEdit()
         self.port_input.setPlaceholderText("10808")
-        self.port_input.setText("10808")  # Default port for v2ray/xray
+        self.port_input.setText("10808")
         self.port_input.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
         form.addRow("نوع پروکسی:", self.type_combo)
         form.addRow("آدرس سرور (IP):", self.server_input)
         form.addRow("پورت (Port):", self.port_input)
 
-        layout.addLayout(form)
+        self.body_layout.addLayout(form)
+        self.body_layout.addStretch()
 
         # Action Buttons
         btn_layout = QHBoxLayout()
         btn_save = QPushButton("ذخیره و اتصال")
+        btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_save.clicked.connect(self._on_save)
 
         btn_cancel = QPushButton("انصراف")
-        btn_cancel.setObjectName("btnCancel")
+        btn_cancel.setStyleSheet("background-color: transparent; color: #7f91a4;")
+        btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_cancel.clicked.connect(self.reject)
 
         btn_layout.addWidget(btn_cancel)
         btn_layout.addWidget(btn_save)
-        layout.addLayout(btn_layout)
+        self.body_layout.addLayout(btn_layout)
 
     def _on_save(self) -> None:
         server = self.server_input.text().strip() or "127.0.0.1"

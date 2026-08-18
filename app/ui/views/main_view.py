@@ -42,6 +42,7 @@ def create_circular_avatar_pixmap(
 
     has_drawn = False
 
+    # 1. Authentic Downloaded Photo
     if photo_path and Path(photo_path).exists():
         src = QPixmap(str(photo_path))
         if not src.isNull():
@@ -56,6 +57,7 @@ def create_circular_avatar_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
+    # 2. Minithumbnail preview fallback
     if not has_drawn and minithumb_data:
         src = QPixmap()
         if src.loadFromData(minithumb_data):
@@ -70,6 +72,7 @@ def create_circular_avatar_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
+    # 3. Default circle with User Initial
     if not has_drawn:
         painter.fillRect(0, 0, render_size, render_size, QColor("#2b5278"))
         painter.setPen(QColor("#ffffff"))
@@ -88,7 +91,7 @@ def create_circular_avatar_pixmap(
 
 
 class MainView(QWidget):
-    """Telegram Desktop styled main dashboard view with 100% Real-time Event Push updates."""
+    """Telegram Desktop styled main dashboard view with live deletions and delta sync."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
@@ -157,19 +160,16 @@ class MainView(QWidget):
         user_layout.setSpacing(10)
         user_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        # Avatar Label
         self.user_avatar = QLabel()
         self.user_avatar.setObjectName("userAvatar")
         self.user_avatar.setFixedSize(42, 42)
         self.user_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.user_avatar.setPixmap(create_circular_avatar_pixmap(None, None, "U", 42))
 
-        # Name Label
         self.user_name_label = QLabel("کاربر تلگرام")
         self.user_name_label.setObjectName("userName")
         self.user_name_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
-        # Settings Button (⚙️)
         btn_settings = QPushButton("⚙️")
         btn_settings.setObjectName("btnHeaderAction")
         btn_settings.setToolTip("تنظیمات و حافظه")
