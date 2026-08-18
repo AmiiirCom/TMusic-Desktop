@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core.metadata import AudioMetadata
 from app.models.track import Track
 
 SPEED_OPTIONS = (0.75, 1.0, 1.25, 1.5, 1.75)
@@ -73,7 +74,7 @@ def create_playerbar_cover_pixmap(
 
 
 class PlayerBar(QFrame):
-    """Telegram Desktop styled bottom audio player bar with speed controls."""
+    """Telegram Desktop styled bottom audio player bar with Lyrics and Metadata buttons."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
@@ -81,6 +82,8 @@ class PlayerBar(QFrame):
     seek_requested = Signal(int)
     volume_changed = Signal(int)
     speed_changed = Signal(float)
+    lyrics_clicked = Signal()
+    track_info_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -137,6 +140,29 @@ class PlayerBar(QFrame):
                 background-color: #2f3e50;
                 color: #ffffff;
             }
+            QPushButton#btnLyrics {
+                background-color: #242f3d;
+                font-size: 14px;
+                padding: 4px 8px;
+                border-radius: 6px;
+                color: #ffffff;
+            }
+            QPushButton#btnLyrics:disabled {
+                background-color: transparent;
+                color: #4a5768;
+            }
+            QPushButton#btnLyrics:enabled {
+                color: #6ab3f3;
+                border: 1px solid #2481cc;
+            }
+            QPushButton#btnInfo {
+                font-size: 15px;
+                padding: 4px;
+                color: #7f91a4;
+            }
+            QPushButton#btnInfo:hover {
+                color: #ffffff;
+            }
             QSlider::groove:horizontal {
                 height: 4px;
                 background: #242f3d;
@@ -159,7 +185,7 @@ class PlayerBar(QFrame):
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(16)
 
-        # 1. Left Section: Artwork Cover & Info
+        # 1. Left Section: Track Artwork Cover & Info
         info_container = QWidget(self)
         info_container.setFixedWidth(260)
         info_layout = QHBoxLayout(info_container)
@@ -241,13 +267,29 @@ class PlayerBar(QFrame):
 
         layout.addWidget(center_container, stretch=1)
 
-        # 3. Right Section: Speed Button & Volume Slider
+        # 3. Right Section: Lyrics + Info + Speed + Volume
         right_container = QWidget(self)
-        right_container.setFixedWidth(220)
+        right_container.setFixedWidth(280)
         right_layout = QHBoxLayout(right_container)
-        right_layout.setSpacing(10)
+        right_layout.setSpacing(8)
 
-        # Playback Speed Button (e.g. 1.0x, 1.5x)
+        # Lyrics Button (Disabled by default, enabled when lyrics detected)
+        self.btn_lyrics = QPushButton("📝")
+        self.btn_lyrics.setObjectName("btnLyrics")
+        self.btn_lyrics.setToolTip("متن آهنگ (Lyrics)")
+        self.btn_lyrics.setEnabled(False)
+        self.btn_lyrics.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_lyrics.clicked.connect(self.lyrics_clicked.emit)
+
+        # Track Details & Metadata Button
+        self.btn_info = QPushButton("ℹ️")
+        self.btn_info.setObjectName("btnInfo")
+        self.btn_info.setToolTip("مشخصات و متادیتا")
+        self.btn_info.setEnabled(False)
+        self.btn_info.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_info.clicked.connect(self.track_info_clicked.emit)
+
+        # Speed Button
         self.btn_speed = QPushButton("1.0x")
         self.btn_speed.setObjectName("btnSpeed")
         self.btn_speed.setToolTip("سرعت پخش")
@@ -262,13 +304,14 @@ class PlayerBar(QFrame):
         self.vol_slider.setValue(80)
         self.vol_slider.valueChanged.connect(self.volume_changed.emit)
 
+        right_layout.addWidget(self.btn_lyrics)
+        right_layout.addWidget(self.btn_info)
         right_layout.addWidget(self.btn_speed)
         right_layout.addWidget(vol_icon)
         right_layout.addWidget(self.vol_slider)
         layout.addWidget(right_container)
 
     def _open_speed_menu(self) -> None:
-        """Open compact Telegram-styled speed selection popup menu."""
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu {
@@ -296,7 +339,6 @@ class PlayerBar(QFrame):
             action.triggered.connect(lambda checked=False, s=speed: self._on_select_speed(s))
             menu.addAction(action)
 
-        # Position menu directly above speed button
         btn_pos = self.btn_speed.mapToGlobal(QPoint(0, 0))
         menu.exec(QPoint(btn_pos.x(), btn_pos.y() - menu.sizeHint().height() - 6))
 
@@ -313,7 +355,18 @@ class PlayerBar(QFrame):
         self.title_label.setText(track.display_title)
         self.artist_label.setText(track.display_artist)
         self.dur_label.setText(track.formatted_duration)
+        self.btn_info.setEnabled(True)
+        self.btn_lyrics.setEnabled(False)  # Reset until metadata arrives
         self.update_cover(track.cover_path)
+
+    def update_metadata(self, metadata: AudioMetadata) -> None:
+        """Enable lyrics button if lyrics exist in audio metadata."""
+        has_lyrics = metadata.has_lyrics
+        self.btn_lyrics.setEnabled(has_lyrics)
+        if has_lyrics:
+            self.btn_lyrics.setToolTip("مشاهده متن آهنگ 📝 (موجود است)")
+        else:
+            self.btn_lyrics.setToolTip("متن آهنگ یافت نشد")
 
     def update_cover(self, cover_path: str | None) -> None:
         if self._current_track:

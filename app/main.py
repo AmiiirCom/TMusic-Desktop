@@ -21,8 +21,10 @@ from app.telegram.adapter import TDLibAdapter
 from app.telegram.enums import AuthState
 from app.telegram.service import TelegramService
 from app.ui.views.login_view import LoginView
+from app.ui.views.lyrics_dialog import LyricsDialog
 from app.ui.views.main_view import MainView
 from app.ui.views.settings_dialog import SettingsDialog
+from app.ui.views.track_info_dialog import TrackInfoDialog
 
 logger = logging.getLogger("tmusic.main")
 
@@ -75,6 +77,8 @@ class MainWindow(QMainWindow):
         player_bar.seek_requested.connect(self._player.seek)
         player_bar.volume_changed.connect(self._on_volume_changed)
         player_bar.speed_changed.connect(self._on_speed_changed)
+        player_bar.lyrics_clicked.connect(self._open_lyrics_dialog)
+        player_bar.track_info_clicked.connect(self._open_track_info_dialog)
 
         # Restore saved volume & speed preferences
         saved_vol = self._settings.preferences.volume
@@ -92,6 +96,7 @@ class MainWindow(QMainWindow):
         self._player.playback_rate_changed.connect(player_bar.set_playback_rate)
         self._player.position_changed.connect(player_bar.set_position)
         self._player.duration_changed.connect(player_bar.set_duration)
+        self._player.metadata_updated.connect(player_bar.update_metadata)
 
         # Precision Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
@@ -155,6 +160,25 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self._cache, self._settings, self)
         dialog.proxy_saved.connect(self._on_proxy_configured)
         dialog.exec()
+
+    def _open_lyrics_dialog(self) -> None:
+        track = self._player.current_track
+        meta = self._player.current_metadata
+        if track and meta.has_lyrics:
+            dialog = LyricsDialog(
+                title=track.display_title,
+                artist=track.display_artist,
+                lyrics=meta.lyrics,
+                parent=self,
+            )
+            dialog.exec()
+
+    def _open_track_info_dialog(self) -> None:
+        track = self._player.current_track
+        if track:
+            meta = self._player.current_metadata
+            dialog = TrackInfoDialog(track=track, metadata=meta, parent=self)
+            dialog.exec()
 
     @Slot(int)
     def _on_volume_changed(self, volume: int) -> None:

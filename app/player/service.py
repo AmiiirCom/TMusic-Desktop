@@ -3,6 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
+from app.core.metadata import AudioMetadata, extract_metadata_from_player
 from app.models.track import Track
 from app.network.stream_server import LocalStreamServer
 from app.telegram.service import TelegramService
@@ -12,7 +13,7 @@ logger = logging.getLogger("tmusic.player.service")
 
 class PlayerService(QObject):
     """
-    Audio playback engine with Instant Progressive Streaming and Smart Next-Track Prefetching.
+    Audio playback engine with Embedded Lyrics, Metadata extraction, and Gapless Prefetching.
     """
 
     track_changed = Signal(Track)
@@ -20,6 +21,7 @@ class PlayerService(QObject):
     playback_rate_changed = Signal(float)
     position_changed = Signal(int)
     duration_changed = Signal(int)
+    metadata_updated = Signal(object)  # Emits AudioMetadata
     download_progress = Signal(int, int)
     error_occurred = Signal(str)
 
@@ -42,6 +44,7 @@ class PlayerService(QObject):
         self._playlist: list[Track] = []
         self._current_index: int = -1
         self._current_track: Track | None = None
+        self._current_metadata: AudioMetadata = AudioMetadata()
         self._cached_paths: dict[int, str] = {}
 
         # Smart Prefetch Trackers
@@ -53,6 +56,7 @@ class PlayerService(QObject):
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
         self._player.playbackRateChanged.connect(self.playback_rate_changed.emit)
+        self._player.metaDataChanged.connect(self._on_media_metadata_changed)
         self._player.mediaStatusChanged.connect(self._on_media_status_changed)
 
         # Wire Telegram download signals
@@ -70,6 +74,10 @@ class PlayerService(QObject):
     @property
     def current_track(self) -> Track | None:
         return self._current_track
+
+    @property
+    def current_metadata(self) -> AudioMetadata:
+        return self._current_metadata
 
     def set_playlist(self, tracks: list[Track], start_track: Track | None = None) -> None:
         self._playlist = list(tracks)
@@ -92,13 +100,13 @@ class PlayerService(QObject):
                 return
 
     def play_track(self, track: Track) -> None:
-        """Start playback instantly (from local file if cached, or progressive HTTP stream)."""
         self._current_track = track
         self._has_prefetched_next = False
+        self._current_metadata = AudioMetadata(title=track.display_title, artist=track.display_artist)
         self._update_current_index(track.id)
         self.track_changed.emit(track)
+        self.metadata_updated.emit(self._current_metadata)
 
-        # 1. If already 100% completed on disk -> Play directly from file
         cached_path = (
             self._cached_paths.get(track.file_id)
             or self._telegram.get_downloaded_path(track.file_id)
@@ -111,7 +119,6 @@ class PlayerService(QObject):
             self._start_playback_source(QUrl.fromLocalFile(str(Path(cached_path).resolve())))
             return
 
-        # 2. Instant Progressive Streaming (Plays in ~0.2s without waiting for full download!)
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
             logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
@@ -190,6 +197,19 @@ class PlayerService(QObject):
         if next_track.cover_file_id and not next_track.cover_path:
             self._telegram.prefetch_cover_file(next_track.id, next_track.cover_file_id)
 
+    @Slot()
+    def _on_media_metadata_changed(self) -> None:
+        """Invoked when FFmpeg/Qt finishes loading ID3 metadata and lyrics."""
+        local_path = self._cached_paths.get(self._current_track.file_id) if self._current_track else None
+        self._current_metadata = extract_metadata_from_player(self._player, local_path)
+        logger.info(
+            "Metadata extracted (Album: '%s', Bitrate: %d kb/s, Has Lyrics: %s)",
+            self._current_metadata.album,
+            self._current_metadata.bitrate_kbps,
+            self._current_metadata.has_lyrics,
+        )
+        self.metadata_updated.emit(self._current_metadata)
+
     @Slot(int)
     def _on_position_changed(self, position_ms: int) -> None:
         self.position_changed.emit(position_ms)
@@ -204,6 +224,9 @@ class PlayerService(QObject):
     def _on_file_download_completed(self, file_id: int, local_path: str) -> None:
         self._cached_paths[file_id] = local_path
         logger.info("File ID %d finished downloading and saved to disk: %s", file_id, local_path)
+        # Re-extract metadata with full file if needed
+        if self._current_track and self._current_track.file_id == file_id:
+            self._on_media_metadata_changed()
 
     @Slot(int, int, int)
     def _on_file_download_progress(self, file_id: int, downloaded: int, total: int) -> None:
