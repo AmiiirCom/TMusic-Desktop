@@ -20,11 +20,10 @@ class TrackInfoDialog(BaseModalDialog):
 
     def __init__(self, track: Track, metadata: AudioMetadata | None, parent: QWidget | None = None) -> None:
         super().__init__(title="مشخصات و متادیتای آهنگ", parent=parent)
-        self.resize(460, 500)
+        self.card_frame.setFixedWidth(460)
         self._init_body(track, metadata or AudioMetadata())
 
     def _init_body(self, track: Track, meta: AudioMetadata) -> None:
-        # Top: Artwork + Title
         top_layout = QHBoxLayout()
         top_layout.setSpacing(16)
 
@@ -49,12 +48,12 @@ class TrackInfoDialog(BaseModalDialog):
         # Separator line
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #242f3d;")
+        sep.setStyleSheet("color: #242f3d; margin: 4px 0;")
         self.body_layout.addWidget(sep)
 
         # Metadata Form
         form = QFormLayout()
-        form.setSpacing(10)
+        form.setSpacing(9)
 
         def add_row(key: str, val: str) -> None:
             if val and str(val).strip():
@@ -88,4 +87,3 @@ class TrackInfoDialog(BaseModalDialog):
             add_row("نام فایل در سیستم:", Path(track.local_path).name)
 
         self.body_layout.addLayout(form)
-        self.body_layout.addStretch()

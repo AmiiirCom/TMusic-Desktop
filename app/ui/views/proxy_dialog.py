@@ -18,7 +18,7 @@ class ProxyDialog(BaseModalDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(title="تنظیمات پروکسی تلگرام", parent=parent)
-        self.resize(380, 260)
+        self.card_frame.setFixedWidth(380)
         self._init_body()
 
     def _init_body(self) -> None:
@@ -43,7 +43,6 @@ class ProxyDialog(BaseModalDialog):
         form.addRow("پورت (Port):", self.port_input)
 
         self.body_layout.addLayout(form)
-        self.body_layout.addStretch()
 
         # Action Buttons
         btn_layout = QHBoxLayout()

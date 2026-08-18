@@ -6,11 +6,8 @@ from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
-    QGraphicsBlurEffect,
     QMainWindow,
     QStackedWidget,
-    QWidget,
 )
 
 from app.bootstrap import create_application
@@ -122,7 +119,7 @@ class MainWindow(QMainWindow):
         self._player.duration_changed.connect(player_bar.set_duration)
         self._player.metadata_updated.connect(player_bar.update_metadata)
 
-        # Precision Network Meter & Cover Integration
+        # Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
@@ -132,7 +129,6 @@ class MainWindow(QMainWindow):
         self._tray.show_window_requested.connect(self._restore_window)
         self._tray.quit_requested.connect(self._quit_application)
 
-        # Connect Telegram Service signals
         self._telegram.auth_state_changed.connect(self._on_auth_state_changed)
         self._telegram.auth_error.connect(self._login_view.show_error)
         self._telegram.connection_state_changed.connect(self._login_view.set_connection_status)
@@ -145,7 +141,6 @@ class MainWindow(QMainWindow):
         self._telegram.tracks_deleted.connect(self._player.remove_from_playlist)
 
         self._telegram.load_cached_state()
-
         self._apply_saved_proxy()
 
     def _apply_saved_proxy(self) -> None:
@@ -178,41 +173,11 @@ class MainWindow(QMainWindow):
         self._is_quitting = True
         QApplication.quit()
 
-    def exec_modal_with_backdrop(self, dialog: QDialog) -> int:
-        """Execute modal dialog with centered positioning, raised dark overlay, and quality blur."""
-        # 1. Apply High-Quality Blur Effect on the Main Window background
-        blur = QGraphicsBlurEffect(self)
-        blur.setBlurRadius(16)
-        blur.setBlurHints(QGraphicsBlurEffect.BlurHint.QualityHint)
-        self._central_stack.setGraphicsEffect(blur)
-
-        # 2. Create Dark Backdrop Overlay on top of MainWindow
-        overlay = QWidget(self)
-        overlay.setGeometry(0, 0, self.width(), self.height())
-        overlay.setStyleSheet("background-color: rgba(0, 0, 0, 165);")
-        overlay.show()
-        overlay.raise_()
-
-        # 3. Process events so background renders blur & dimming immediately
-        QApplication.processEvents()
-
-        # 4. Execute modal dialog centered
-        dialog.setParent(self, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        result = dialog.exec()
-
-        # 5. Cleanup Overlay & Remove Blur cleanly (Type-safe for Pylance)
-        overlay.hide()
-        overlay.deleteLater()
-        blur.setEnabled(False)
-        self._central_stack.setGraphicsEffect(None)  # type: ignore[arg-type]
-
-        return result
-
     def _open_settings_dialog(self) -> None:
         dialog = SettingsDialog(self._cache, self._settings, self)
         dialog.proxy_saved.connect(self._on_proxy_configured)
         dialog.logout_requested.connect(self._on_perform_logout)
-        self.exec_modal_with_backdrop(dialog)
+        dialog.exec()
 
     def _open_lyrics_dialog(self) -> None:
         track = self._player.current_track
@@ -224,14 +189,14 @@ class MainWindow(QMainWindow):
                 lyrics=meta.lyrics,
                 parent=self,
             )
-            self.exec_modal_with_backdrop(dialog)
+            dialog.exec()
 
     def _open_track_info_dialog(self) -> None:
         track = self._player.current_track
         if track:
             meta = self._player.current_metadata
             dialog = TrackInfoDialog(track=track, metadata=meta, parent=self)
-            self.exec_modal_with_backdrop(dialog)
+            dialog.exec()
 
     def _on_perform_logout(self) -> None:
         logger.info("Performing factory reset logout: purging data directory...")

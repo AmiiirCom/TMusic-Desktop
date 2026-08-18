@@ -18,7 +18,7 @@ class LyricsDialog(BaseModalDialog):
     def __init__(self, title: str, artist: str, lyrics: str, parent: QWidget | None = None) -> None:
         super().__init__(title="متن ترانه (Lyrics)", parent=parent)
         self._lyrics = lyrics
-        self.resize(480, 560)
+        self.card_frame.setFixedSize(480, 540)
         self._init_body(title, artist)
 
     def _init_body(self, title: str, artist: str) -> None:
