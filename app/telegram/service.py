@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.config import AppConfig
 from app.core.keywords import is_music_title
@@ -28,7 +28,7 @@ class ChatTrackPaginationState:
 
 
 class TelegramService(QObject):
-    """High-speed Telegram service with HD cover artwork streaming and lazy track loading."""
+    """High-speed Telegram service with full network statistics and lazy track loading."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -40,10 +40,13 @@ class TelegramService(QObject):
 
     tracks_loaded = Signal(object, list, bool)
     tracks_appended = Signal(object, list, bool)
-    cover_downloaded = Signal(str, str)  # (track_id, cover_local_path)
+    cover_downloaded = Signal(str, str)
 
     file_download_progress = Signal(int, int, int)
     file_download_completed = Signal(int, str)
+
+    # Precision Network Stats Signal: (total_received_bytes, total_sent_bytes)
+    network_traffic_received = Signal(int, int)
 
     def __init__(
         self,
@@ -68,8 +71,6 @@ class TelegramService(QObject):
         self._owned_chats: dict[int, OwnedChat] = {}
         self._downloading_files: set[int] = set()
         self._file_id_to_path: dict[int, str] = {}
-
-        # Cover files mapping: cover_file_id -> track_id
         self._cover_file_to_track_id: dict[int, str] = {}
 
         # Per-chat Track Pagination state
@@ -78,6 +79,11 @@ class TelegramService(QObject):
         # Loading trackers
         self._loading_main_chats = False
         self._loading_archive_chats = False
+
+        # Live Network Statistics Poller Timer (Every 1 second)
+        self._net_timer = QTimer(self)
+        self._net_timer.setInterval(1000)
+        self._net_timer.timeout.connect(self._poll_network_statistics)
 
     @property
     def current_user(self) -> TelegramUser | None:
@@ -114,13 +120,33 @@ class TelegramService(QObject):
         self._worker = TDLibWorker(self._adapter)
         self._worker.update_received.connect(self._handle_update)
         self._worker.start()
-        logger.info("TelegramService started")
+        self._net_timer.start()
+        logger.info("TelegramService and Network Monitor started")
+
+    def _poll_network_statistics(self) -> None:
+        """Query TDLib for full accurate network usage."""
+        if self._adapter.is_loaded:
+            self._adapter.send({
+                "@type": "getNetworkStatistics",
+                "only_current": False,
+                "@extra": "periodic_net_stats",
+            })
 
     def _handle_update(self, update: dict[str, Any]) -> None:
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
 
-        # 1. Chunked Track Search Responses
+        # 1. Handle Network Statistics
+        if extra == "periodic_net_stats" and update_type == "networkStatistics":
+            total_rx = 0
+            total_tx = 0
+            for entry in update.get("entries", []):
+                total_rx += entry.get("received_bytes", 0)
+                total_tx += entry.get("sent_bytes", 0)
+            self.network_traffic_received.emit(total_rx, total_tx)
+            return
+
+        # 2. Chunked Track Search Responses
         if isinstance(extra, str) and extra.startswith("load_tracks_"):
             parts = extra.split("_")
             chat_id = int(parts[2])
@@ -136,7 +162,7 @@ class TelegramService(QObject):
                     self.tracks_loaded.emit(chat_id, [], False)
             return
 
-        # 2. Chat Pagination Responses
+        # 3. Chat Pagination Responses
         if extra == "load_main_chats":
             if update_type == "ok":
                 self._load_next_main_chats()
@@ -154,7 +180,7 @@ class TelegramService(QObject):
                 self._loading_archive_chats = False
             return
 
-        # 3. Direct response from getSupergroup checks
+        # 4. Direct response from getSupergroup checks
         if isinstance(extra, str) and extra.startswith("check_supergroup_"):
             chat_id = int(extra.replace("check_supergroup_", ""))
             if update_type == "supergroup":
@@ -163,7 +189,7 @@ class TelegramService(QObject):
                 self._evaluate_chat_ownership(chat_id)
             return
 
-        # 4. General Update Streams
+        # 5. General Update Streams
         match update_type:
             case "updateAuthorizationState":
                 self._process_auth_state(update.get("authorization_state", {}))
@@ -739,8 +765,10 @@ class TelegramService(QObject):
         })
 
     def log_out(self) -> None:
+        self._net_timer.stop()
         self._adapter.send({"@type": "logOut"})
 
     def stop(self) -> None:
+        self._net_timer.stop()
         if self._worker:
             self._worker.stop()

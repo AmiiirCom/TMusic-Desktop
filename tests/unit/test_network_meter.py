@@ -1,16 +1,21 @@
-from app.network.meter import NetworkMeter
+from app.network.meter import NetworkMeter, format_bytes, format_speed
 
 
-def test_network_meter_accumulation() -> None:
-    """Verify network byte accumulation and formatting."""
+def test_network_meter_precision_tracking() -> None:
+    """Verify precision delta and speed calculations."""
     meter = NetworkMeter()
 
-    # Record 2 MB download
-    meter.record_download(2 * 1024 * 1024)
-    assert meter._total_bytes == 2 * 1024 * 1024
+    # Initial baseline (e.g. 10 MB total before this app run)
+    meter.update_network_stats(10 * 1024 * 1024, 1 * 1024 * 1024)
+    assert meter._session_rx == 0
+    assert meter._session_tx == 0
 
-    # Trigger internal tick calculation
-    meter._on_tick()
+    # 1 second later: received 512 KB
+    meter.update_network_stats(10 * 1024 * 1024 + 512 * 1024, 1 * 1024 * 1024 + 10 * 1024)
+    assert meter._session_rx == 512 * 1024
+    assert meter._session_tx == 10 * 1024
 
-    # Total should be formatted cleanly as MB
-    assert meter._last_tick_bytes == 2 * 1024 * 1024
+    # Format checks
+    assert format_bytes(512 * 1024) == "512.0 KB"
+    assert format_bytes(10 * 1024 * 1024) == "10.0 MB"
+    assert format_speed(512 * 1024) == "512 KB/s"

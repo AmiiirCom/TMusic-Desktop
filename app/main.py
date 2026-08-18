@@ -92,9 +92,9 @@ class MainWindow(QMainWindow):
         self._player.position_changed.connect(player_bar.set_position)
         self._player.duration_changed.connect(player_bar.set_duration)
 
-        # Network meter & Cover integration
+        # Precision Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
-        self._telegram.file_download_progress.connect(self._on_download_progress)
+        self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
         self._central_stack.addWidget(self._login_view)
@@ -164,10 +164,6 @@ class MainWindow(QMainWindow):
     def _on_speed_changed(self, speed: float) -> None:
         self._player.set_playback_rate(speed)
         self._settings.set_playback_rate(speed)
-
-    @Slot(int, int, int)
-    def _on_download_progress(self, file_id: int, downloaded: int, total: int) -> None:
-        self._meter.record_download(downloaded)
 
     @Slot(str, str, int)
     def _on_proxy_configured(self, proxy_type: str, server: str, port: int) -> None:
