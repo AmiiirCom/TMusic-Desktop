@@ -1,4 +1,5 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -16,7 +17,7 @@ from app.settings.service import SettingsService
 
 
 class SettingsDialog(QDialog):
-    """Settings, Proxy and Cache management dialog."""
+    """Settings, Proxy, and Downloads management dialog."""
 
     cache_cleared = Signal()
     proxy_saved = Signal(str, str, int)
@@ -32,7 +33,7 @@ class SettingsDialog(QDialog):
         self._settings = settings_service
 
         self.setWindowTitle("تنظیمات TMusic")
-        self.resize(420, 360)
+        self.resize(440, 420)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._init_ui()
 
@@ -63,6 +64,11 @@ class SettingsDialog(QDialog):
                 border: none;
             }
             QPushButton:hover { background-color: #1d72b8; }
+            QPushButton#btnSecondary {
+                background-color: #242f3d;
+                border: 1px solid #2f3e50;
+            }
+            QPushButton#btnSecondary:hover { background-color: #2f3e50; }
             QPushButton#btnClear {
                 background-color: #e53935;
             }
@@ -71,7 +77,7 @@ class SettingsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
 
         # 1. Proxy Section
         proxy_title = QLabel("🛡️ تنظیمات پروکسی تلگرام (رمزنگاری‌شده)")
@@ -108,10 +114,22 @@ class SettingsDialog(QDialog):
         sep.setStyleSheet("background-color: #242f3d;")
         layout.addWidget(sep)
 
-        # 2. Cache Section
-        cache_title = QLabel("💾 مدیریت حافظه موقت (کش)")
-        cache_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #6ab3f3;")
-        layout.addWidget(cache_title)
+        # 2. Downloads & Storage Section
+        storage_title = QLabel("📂 محل ذخیره آهنگ‌ها (Downloads)")
+        storage_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #6ab3f3;")
+        layout.addWidget(storage_title)
+
+        path_label = QLabel(str(self._cache.downloads_path))
+        path_label.setStyleSheet("color: #7f91a4; font-size: 11px;")
+        path_label.setWordWrap(True)
+        path_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        layout.addWidget(path_label)
+
+        btn_open_folder = QPushButton("📁 باز کردن پوشه TMusicDownloads")
+        btn_open_folder.setObjectName("btnSecondary")
+        btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_open_folder.clicked.connect(self._on_open_downloads_folder)
+        layout.addWidget(btn_open_folder)
 
         cache_layout = QHBoxLayout()
         cache_label = QLabel("حجم آهنگ‌های ذخیره‌شده:")
@@ -123,7 +141,7 @@ class SettingsDialog(QDialog):
         cache_layout.addWidget(self.size_val)
         layout.addLayout(cache_layout)
 
-        btn_clear = QPushButton("🗑️ پاک‌سازی کش آهنگ‌ها")
+        btn_clear = QPushButton("🗑️ پاک‌سازی آهنگ‌های دانلود شده")
         btn_clear.setObjectName("btnClear")
         btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_clear.clicked.connect(self._on_clear_cache)
@@ -144,6 +162,9 @@ class SettingsDialog(QDialog):
 
         self._settings.set_proxy(ptype, server, port, enabled=True)
         self.proxy_saved.emit(ptype, server, port)
+
+    def _on_open_downloads_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._cache.downloads_path)))
 
     def _on_clear_cache(self) -> None:
         self._cache.clear_cache()

@@ -36,6 +36,8 @@ secrets/
 .idea/
 .DS_Store
 Thumbs.db
+project-structure.txt
+ProjectStructure.md
 
 # Test & Coverage
 .pytest_cache/

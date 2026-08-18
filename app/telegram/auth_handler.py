@@ -69,7 +69,7 @@ class AuthHandler:
             "@type": "setTdlibParameters",
             "use_test_dc": False,
             "database_directory": str(self._config.tdlib_dir),
-            "files_directory": str(self._config.cache_dir),
+            "files_directory": str(self._config.downloads_dir),
             "use_file_database": True,
             "use_chat_info_database": True,
             "use_message_database": True,

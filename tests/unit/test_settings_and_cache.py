@@ -10,12 +10,10 @@ def test_settings_persistence(tmp_path: Path) -> None:
     crypto = CryptoManager(tmp_path)
     settings = SettingsService(tmp_path, crypto)
 
-    # Change settings
     settings.set_proxy(proxy_type="HTTP", server="192.168.1.50", port=8080, enabled=True)
     settings.set_volume(45)
     settings.set_last_chat(123456789)
 
-    # Create a fresh service instance reading the same encrypted file
     new_settings_instance = SettingsService(tmp_path, crypto)
 
     assert new_settings_instance.preferences.volume == 45
@@ -26,29 +24,27 @@ def test_settings_persistence(tmp_path: Path) -> None:
 
 
 def test_cache_calculation_and_clear(tmp_path: Path) -> None:
-    """Verify cache size calculation and file deletion."""
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
+    """Verify downloads directory size calculation and file deletion."""
+    downloads_dir = tmp_path / "TMusicDownloads"
+    downloads_dir.mkdir()
 
-    # Create dummy media files
-    file1 = cache_dir / "track1.mp3"
-    file1.write_bytes(b"A" * 1024 * 1024)  # 1 MB
+    file1 = downloads_dir / "track1.mp3"
+    file1.write_bytes(b"A" * 1024 * 1024)
 
-    file2 = cache_dir / "track2.mp3"
-    file2.write_bytes(b"B" * (512 * 1024))  # 0.5 MB
+    file2 = downloads_dir / "track2.mp3"
+    file2.write_bytes(b"B" * (512 * 1024))
 
     @dataclass(slots=True)
     class MockConfig:
         root_dir: Path
-        cache_dir: Path
+        downloads_dir: Path
 
-    mock_config = MockConfig(root_dir=tmp_path, cache_dir=cache_dir)
+    mock_config = MockConfig(root_dir=tmp_path, downloads_dir=downloads_dir)
     cache_service = CacheService(mock_config)  # type: ignore
 
     total_bytes = cache_service.get_cache_size_bytes()
     assert total_bytes == int(1.5 * 1024 * 1024)
 
-    # Clear cache
     cache_service.clear_cache()
     assert cache_service.get_cache_size_bytes() == 0
     assert not file1.exists()

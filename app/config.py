@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import sys
 
+from app.platform.paths import get_default_downloads_dir
+
 
 def _load_env(env_path: Path) -> dict[str, str]:
     """Simple zero-dependency .env reader."""
@@ -24,14 +26,11 @@ def _load_env(env_path: Path) -> dict[str, str]:
 
 
 def _get_root_and_bundle_dir() -> tuple[Path, Path]:
-    """Resolve base directory for both development and PyInstaller frozen modes."""
     if getattr(sys, "frozen", False):
-        # Running as compiled standalone executable
         root = Path(sys.executable).resolve().parent
         bundle = Path(getattr(sys, "_MEIPASS", root))
         return root, bundle
     else:
-        # Running in standard Python development mode
         root = Path(__file__).resolve().parent.parent
         return root, root
 
@@ -63,7 +62,9 @@ class AppConfig:
     translations_dir: Path = _BUNDLE_DIR / "resources" / "translations"
     data_dir: Path = _ROOT_DIR / "data"
     tdlib_dir: Path = _ROOT_DIR / "data" / "tdlib"
-    cache_dir: Path = _ROOT_DIR / "data" / "cache"
+
+    # Native OS Downloads / TMusicDownloads
+    downloads_dir: Path = field(default_factory=get_default_downloads_dir)
 
     # Loaded Telegram API credentials
     api_id: int = field(default_factory=_get_api_id)
@@ -72,4 +73,4 @@ class AppConfig:
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.tdlib_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.downloads_dir.mkdir(parents=True, exist_ok=True)
