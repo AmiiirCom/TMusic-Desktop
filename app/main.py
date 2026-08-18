@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 import sys
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QCloseEvent
@@ -29,6 +30,12 @@ from app.ui.views.track_info_dialog import TrackInfoDialog
 logger = logging.getLogger("tmusic.main")
 
 
+def has_saved_telegram_session(config: AppConfig) -> bool:
+    """Check if a local TDLib session database already exists on disk."""
+    td_binlog = config.tdlib_dir / "td.binlog"
+    return td_binlog.exists() and td_binlog.stat().st_size > 0
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -54,20 +61,31 @@ class MainWindow(QMainWindow):
         self._central_stack = QStackedWidget(self)
         self.setCentralWidget(self._central_stack)
 
-        # 1. Login View
-        self._login_view = LoginView(self)
-        self._login_view.phone_submitted.connect(self._telegram.send_phone_number)
-        self._login_view.code_submitted.connect(self._telegram.send_code)
-        self._login_view.password_submitted.connect(self._telegram.send_password)
-        self._login_view.proxy_configured.connect(self._on_proxy_configured)
-
-        # 2. Main Dashboard View
+        # 1. Main Dashboard View
         self._main_view = MainView(self)
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
         self._main_view.logout_requested.connect(self._telegram.log_out)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
+
+        # 2. Login View
+        self._login_view = LoginView(self)
+        self._login_view.phone_submitted.connect(self._telegram.send_phone_number)
+        self._login_view.code_submitted.connect(self._telegram.send_code)
+        self._login_view.password_submitted.connect(self._telegram.send_password)
+        self._login_view.proxy_configured.connect(self._on_proxy_configured)
+
+        # Add views to stack
+        self._central_stack.addWidget(self._main_view)
+        self._central_stack.addWidget(self._login_view)
+
+        # Zero-Flicker Initial View Selection:
+        # If user has an existing Telegram session, display MainView from frame 0!
+        if has_saved_telegram_session(self._config):
+            self._central_stack.setCurrentWidget(self._main_view)
+        else:
+            self._central_stack.setCurrentWidget(self._login_view)
 
         # Connect PlayerBar UI controls with PlayerService
         player_bar = self._main_view.player_bar
@@ -103,9 +121,6 @@ class MainWindow(QMainWindow):
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
-        self._central_stack.addWidget(self._login_view)
-        self._central_stack.addWidget(self._main_view)
-
         # System Tray Integration
         self._tray = TrayService(self, self._player)
         self._tray.show_window_requested.connect(self._restore_window)
@@ -122,10 +137,6 @@ class MainWindow(QMainWindow):
 
         # Emit cached music channels immediately
         self._telegram.load_cached_music_chats()
-
-        # Check if already authenticated on init
-        if self._telegram.current_auth_state == AuthState.READY:
-            self._central_stack.setCurrentWidget(self._main_view)
 
         # Apply saved proxy automatically on launch
         self._apply_saved_proxy()
