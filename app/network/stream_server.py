@@ -14,7 +14,7 @@ logger = logging.getLogger("tmusic.network.stream")
 
 
 class TDLibStreamHandler(BaseHTTPRequestHandler):
-    """Precision HTTP Handler supporting live TDLib stream and fast local disk fallback."""
+    """Resilient HTTP Handler serving progressive audio with disconnect fault-tolerance."""
 
     adapter: TDLibAdapter | None = None
     server_ref: Any = None
@@ -23,6 +23,15 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self) -> None:
+        try:
+            self._handle_stream()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            # Client disconnected or network dropped
+            return
+        except Exception as exc:
+            logger.debug("Streaming socket handled exception: %s", exc)
+
+    def _handle_stream(self) -> None:
         match = re.match(r"^/stream/(\d+)$", self.path)
         if not match or not self.adapter:
             self.send_error(404, "Invalid stream URL")
@@ -31,15 +40,18 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
         file_id = int(match.group(1))
         file_size = self.server_ref.get_file_size(file_id) if self.server_ref else 0
 
-        # 1. Trigger TDLib download with maximum priority 32
-        self.adapter.send({
-            "@type": "downloadFile",
-            "file_id": file_id,
-            "priority": 32,
-            "offset": 0,
-            "limit": 0,
-            "synchronous": False,
-        })
+        # 1. Trigger TDLib download
+        try:
+            self.adapter.send({
+                "@type": "downloadFile",
+                "file_id": file_id,
+                "priority": 32,
+                "offset": 0,
+                "limit": 0,
+                "synchronous": False,
+            })
+        except Exception:
+            pass
 
         # 2. Parse Range header if present
         range_header = self.headers.get("Range")
@@ -56,37 +68,37 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
         chunk_size = 64 * 1024
         offset = start_offset
 
-        # 3. Wait for initial chunk at offset
+        # 3. Wait for initial chunk
         initial_count = min(chunk_size, (end_offset - offset + 1)) if end_offset else chunk_size
         first_chunk: bytes | None = None
         retries = 0
 
-        while retries < 60:
-            # Check if file has already finished downloading to disk
+        while retries < 40:
             completed_file = self.server_ref.get_completed_path(file_id) if self.server_ref else None
             if completed_file and Path(completed_file).exists() and Path(completed_file).stat().st_size > offset:
                 break
 
-            res = self.adapter.request_sync({
-                "@type": "readFilePart",
-                "file_id": file_id,
-                "offset": offset,
-                "count": initial_count,
-            }, timeout=0.6)
+            try:
+                res = self.adapter.request_sync({
+                    "@type": "readFilePart",
+                    "file_id": file_id,
+                    "offset": offset,
+                    "count": initial_count,
+                }, timeout=0.5)
 
-            if res and res.get("@type") == "data":
-                data_b64 = res.get("data", "")
-                if data_b64:
-                    try:
+                if res and res.get("@type") == "data":
+                    data_b64 = res.get("data", "")
+                    if data_b64:
                         first_chunk = base64.b64decode(data_b64)
                         if first_chunk:
                             break
-                    except Exception:
-                        pass
+            except Exception:
+                pass
+
             time.sleep(0.08)
             retries += 1
 
-        # 4. Send HTTP 200/206 Response Headers
+        # 4. Send HTTP Headers
         if range_header and file_size > 0 and end_offset is not None:
             content_len = end_offset - start_offset + 1
             self.send_response(206)
@@ -102,7 +114,7 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-        # Write first chunk if obtained via readFilePart
+        # Write first chunk
         if first_chunk:
             try:
                 self.wfile.write(first_chunk)
@@ -111,16 +123,16 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
             except Exception:
                 return
 
-        # 5. Streaming Loop (Switches to fast disk reading as soon as file completes)
+        # 5. Continuous Streaming Loop
         empty_retries = 0
-        while empty_retries < 150:
+        while empty_retries < 60:
             if file_size > 0 and offset >= file_size:
                 break
 
             if end_offset and offset > end_offset:
                 break
 
-            # Fast Path: If download finished to disk, stream remaining bytes directly from disk file!
+            # Fast local file reading if completed on disk
             completed_file = self.server_ref.get_completed_path(file_id) if self.server_ref else None
             if completed_file and Path(completed_file).exists() and Path(completed_file).stat().st_size > offset:
                 try:
@@ -140,7 +152,6 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
                 except Exception:
                     break
 
-            # Progressive TDLib readFilePart Loop
             if file_size > 0:
                 remaining = file_size - offset
                 if remaining <= 0:
@@ -155,7 +166,7 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
                     "file_id": file_id,
                     "offset": offset,
                     "count": requested_count,
-                }, timeout=0.6)
+                }, timeout=0.5)
 
                 if res and res.get("@type") == "data":
                     data_b64 = res.get("data", "")
@@ -171,14 +182,14 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
                 time.sleep(0.15)
                 empty_retries += 1
 
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
                 break
             except Exception:
                 break
 
 
 class LocalStreamServer:
-    """Zero-dependency localhost streaming proxy server."""
+    """Zero-dependency resilient localhost streaming proxy server."""
 
     def __init__(self, adapter: TDLibAdapter) -> None:
         self._adapter = adapter
@@ -210,7 +221,6 @@ class LocalStreamServer:
         return f"http://127.0.0.1:{self._port}/stream/{file_id}"
 
     def register_completed_file(self, file_id: int, local_path: str) -> None:
-        """Register completed file path for instant local disk serving."""
         self._completed_paths[file_id] = local_path
 
     def get_completed_path(self, file_id: int) -> str | None:
@@ -221,5 +231,8 @@ class LocalStreamServer:
 
     def stop(self) -> None:
         if self._server:
-            self._server.shutdown()
-            self._server.server_close()
+            try:
+                self._server.shutdown()
+                self._server.server_close()
+            except Exception:
+                pass

@@ -15,9 +15,9 @@ logger = logging.getLogger("tmusic.player.service")
 
 
 class PlayerService(QObject):
-    """Audio playback engine with instant stop on track deletion and gapless prefetching."""
+    """Audio playback engine with offline playback resilience and network drop protection."""
 
-    track_changed = Signal(object)  # Emits Track or None
+    track_changed = Signal(object)
     playback_state_changed = Signal(bool)
     playback_rate_changed = Signal(float)
     position_changed = Signal(int)
@@ -64,6 +64,7 @@ class PlayerService(QObject):
         self._player.playbackRateChanged.connect(self.playback_rate_changed.emit)
         self._player.metaDataChanged.connect(self._on_media_metadata_changed)
         self._player.mediaStatusChanged.connect(self._on_media_status_changed)
+        self._player.errorOccurred.connect(self._on_player_error)
 
         # Wire Telegram download signals
         self._telegram.file_download_completed.connect(self._on_file_download_completed)
@@ -122,17 +123,19 @@ class PlayerService(QObject):
         del_set = set(deleted_track_ids)
         self._playlist = [t for t in self._playlist if t.id not in del_set]
 
-        # If currently playing track is deleted from Telegram, stop immediately!
         if self._current_track and self._current_track.id in del_set:
-            logger.info("🛑 Active playing track was deleted from Telegram channel. Halting playback.")
+            logger.info("Active track was deleted from Telegram. Stopping playback.")
             self.stop()
         elif self._current_track:
             self._update_current_index(self._current_track.id)
 
     def stop(self) -> None:
-        """Completely halt audio playback and reset state."""
-        self._player.stop()
-        self._player.setSource(QUrl())
+        try:
+            self._player.stop()
+            self._player.setSource(QUrl())
+        except Exception:
+            pass
+
         self._current_track = None
         self._current_index = -1
         self._current_metadata = AudioMetadata()
@@ -176,33 +179,36 @@ class PlayerService(QObject):
 
         self._cleanup_inactive_temp_files()
 
-        # 1. Clean TMusicDownloads Check
+        # 1. Offline & Cache Check: Clean TMusicDownloads
         clean_file = self._get_clean_download_destination(track)
         if clean_file.exists() and clean_file.stat().st_size > 0:
             self._cached_paths[track.file_id] = str(clean_file)
             self._telegram.register_downloaded_path(track.file_id, str(clean_file))
-            logger.info("⚡ Instant play from clean TMusicDownloads: %s", clean_file)
+            logger.info("⚡ Playing offline from TMusicDownloads: %s", clean_file)
             self._start_playback_source(QUrl.fromLocalFile(str(clean_file.resolve())))
             return
 
-        # 2. Fallback Path
+        # 2. Fallback Path Check
         cached_path = self._cached_paths.get(track.file_id) or self._telegram.get_downloaded_path(track.file_id)
         if cached_path and Path(cached_path).exists() and Path(cached_path).stat().st_size > 0:
-            logger.info("Playing from fallback cache path: %s", cached_path)
+            logger.info("Playing from fallback cache: %s", cached_path)
             self._start_playback_source(QUrl.fromLocalFile(str(Path(cached_path).resolve())))
             return
 
-        # 3. Progressive Stream
+        # 3. Progressive Live Streaming
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
-            logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
+            logger.info("⚡ Progressive Stream starting: %s", stream_url)
             self._start_playback_source(QUrl(stream_url))
         else:
             self._telegram.download_file(track.file_id)
 
     def _start_playback_source(self, url: QUrl) -> None:
-        self._player.setSource(url)
-        self._player.play()
+        try:
+            self._player.setSource(url)
+            self._player.play()
+        except Exception as exc:
+            logger.warning("Could not set player source (%s): %s", url, exc)
 
     def toggle_play_pause(self) -> None:
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -227,7 +233,10 @@ class PlayerService(QObject):
         self.play_track(self._playlist[prev_idx])
 
     def seek(self, position_ms: int) -> None:
-        self._player.setPosition(position_ms)
+        try:
+            self._player.setPosition(position_ms)
+        except Exception:
+            pass
 
     def set_volume(self, volume_percent: int) -> None:
         vol = max(0, min(100, volume_percent)) / 100.0
@@ -286,6 +295,13 @@ class PlayerService(QObject):
         self._last_duration_ms = duration_ms
         self.duration_changed.emit(duration_ms)
 
+    @Slot(QMediaPlayer.Error, str)
+    def _on_player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
+        """Handle media player network drop or decode errors gracefully."""
+        logger.warning("Media player encountered error (%s): %s", error, error_string)
+        self.error_occurred.emit(error_string)
+        self.playback_state_changed.emit(False)
+
     @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
         internal_path = Path(internal_path_str)
@@ -322,7 +338,7 @@ class PlayerService(QObject):
                         self._pending_temp_cleanup[file_id] = internal_path
 
             except Exception as exc:
-                logger.warning("Could not export clean audio to %s: %s", dest_file, exc)
+                logger.warning("Could not export audio to %s: %s", dest_file, exc)
                 self._cached_paths[file_id] = str(internal_path)
                 self._telegram.register_downloaded_path(file_id, str(internal_path))
 
