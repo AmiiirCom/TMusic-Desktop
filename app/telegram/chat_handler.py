@@ -10,7 +10,7 @@ logger = logging.getLogger("tmusic.telegram.chats")
 
 
 class ChatHandler:
-    """Handles channel discovery, stream loading, ownership checks, and keyword filtering."""
+    """Handles channel discovery, stream loading, ownership checks, and chat deletions."""
 
     def __init__(
         self,
@@ -40,7 +40,6 @@ class ChatHandler:
                 self._on_owned_chats_updated(list(self._owned_chats.values()))
 
     def start_chat_sync(self) -> None:
-        logger.info("Starting chat synchronization...")
         self._adapter.send({"@type": "getMe"})
         self._adapter.send({
             "@type": "getCreatedPublicChats",
@@ -69,14 +68,11 @@ class ChatHandler:
             if update_type == "ok":
                 self._load_next_main_chats()
             elif update_type == "error":
-                logger.info("Main chats stream complete (%d chats). Loading archive...", len(self._raw_chats))
                 self._load_next_archive_chats()
 
         elif extra == "load_archive_chats":
             if update_type == "ok":
                 self._load_next_archive_chats()
-            elif update_type == "error":
-                logger.info("Archive stream complete. Total chats scanned: %d", len(self._raw_chats))
 
     def process_new_chat(self, chat: dict[str, Any]) -> None:
         chat_id = chat.get("id", 0)
@@ -86,6 +82,23 @@ class ChatHandler:
     def process_supergroup_update(self, sg: dict[str, Any]) -> None:
         sg_id = sg.get("id", 0)
         self._supergroups[sg_id] = sg
+
+        status = sg.get("status", {}).get("@type", "")
+        is_creator = status == "chatMemberStatusCreator" or sg.get("is_creator", False)
+
+        # If user left or deleted channel, remove from owned list immediately
+        if not is_creator:
+            removed = False
+            for chat_id, chat in list(self._raw_chats.items()):
+                if chat.get("type", {}).get("supergroup_id") == sg_id:
+                    if chat_id in self._owned_chats:
+                        del self._owned_chats[chat_id]
+                        removed = True
+                        logger.info("🗑️ Removed deleted/left channel from owned chats: ID %d", chat_id)
+            if removed:
+                self._sync_and_emit()
+            return
+
         for chat_id, chat in self._raw_chats.items():
             if chat.get("type", {}).get("supergroup_id") == sg_id:
                 self._evaluate_chat_ownership(chat_id)
@@ -93,6 +106,22 @@ class ChatHandler:
     def process_basic_group_update(self, bg: dict[str, Any]) -> None:
         bg_id = bg.get("id", 0)
         self._basic_groups[bg_id] = bg
+
+        status = bg.get("status", {}).get("@type", "")
+        is_creator = status == "chatMemberStatusCreator" or bg.get("is_creator", False)
+
+        if not is_creator:
+            removed = False
+            for chat_id, chat in list(self._raw_chats.items()):
+                if chat.get("type", {}).get("basic_group_id") == bg_id:
+                    if chat_id in self._owned_chats:
+                        del self._owned_chats[chat_id]
+                        removed = True
+                        logger.info("🗑️ Removed deleted/left group from owned list: ID %d", chat_id)
+            if removed:
+                self._sync_and_emit()
+            return
+
         for chat_id, chat in self._raw_chats.items():
             if chat.get("type", {}).get("basic_group_id") == bg_id:
                 self._evaluate_chat_ownership(chat_id)

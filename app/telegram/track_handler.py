@@ -1,7 +1,6 @@
 import base64
 from dataclasses import dataclass, field
 import logging
-from pathlib import Path
 from typing import Any, Callable
 
 from app.models.track import Track
@@ -20,7 +19,7 @@ class ChatTrackPaginationState:
 
 
 class TrackHandler:
-    """Manages audio track searching, chunked pagination, and metadata extraction."""
+    """Manages audio track searching, chunked pagination, delta-syncing, and live deletions."""
 
     def __init__(
         self,
@@ -29,12 +28,16 @@ class TrackHandler:
         register_file_path: Callable[[int, str], None],
         on_initial_chunk_loaded: Callable[[int, list[Track], bool], None],
         on_lazy_chunk_appended: Callable[[int, list[Track], bool], None],
+        on_delta_tracks_prepended: Callable[[int, list[Track]], None],
+        on_tracks_deleted: Callable[[int, list[str]], None],
     ) -> None:
         self._adapter = adapter
         self._request_cover_download = request_cover_download
         self._register_file_path = register_file_path
         self._on_initial_chunk_loaded = on_initial_chunk_loaded
         self._on_lazy_chunk_appended = on_lazy_chunk_appended
+        self._on_delta_tracks_prepended = on_delta_tracks_prepended
+        self._on_tracks_deleted = on_tracks_deleted
 
         self._track_pagination: dict[int, ChatTrackPaginationState] = {}
 
@@ -52,11 +55,6 @@ class TrackHandler:
         is_initial_str = "initial" if reset else "lazy"
         from_msg_id = state.next_from_message_id if not reset else 0
 
-        logger.info(
-            "Loading tracks chunk for chat %d (from_id=%d, limit=%d, type=%s)...",
-            chat_id, from_msg_id, chunk_size, is_initial_str
-        )
-
         self._adapter.send({
             "@type": "searchChatMessages",
             "chat_id": chat_id,
@@ -68,18 +66,37 @@ class TrackHandler:
             "@extra": f"load_tracks_{chat_id}_{is_initial_str}",
         })
 
-    def process_search_response(
-        self, chat_id: int, messages: list[dict[str, Any]], next_from_id: int, is_initial: bool
-    ) -> None:
+    def sync_chat_tracks(self, chat_id: int) -> None:
+        if chat_id not in self._track_pagination:
+            self.load_chat_tracks(chat_id, reset=True, chunk_size=40)
+            return
+
+        self._adapter.send({
+            "@type": "searchChatMessages",
+            "chat_id": chat_id,
+            "query": "",
+            "from_message_id": 0,
+            "offset": 0,
+            "limit": 30,
+            "filter": {"@type": "searchMessagesFilterAudio"},
+            "@extra": f"sync_tracks_{chat_id}",
+        })
+
+    def process_delete_messages(self, chat_id: int, message_ids: list[int]) -> None:
+        """Handle real-time deletion of messages from Telegram channel."""
         state = self._track_pagination.get(chat_id)
-        if not state:
-            state = ChatTrackPaginationState(chat_id=chat_id)
-            self._track_pagination[chat_id] = state
+        if not state or not state.tracks:
+            return
 
-        state.is_loading = False
-        state.next_from_message_id = next_from_id
-        state.has_more = (next_from_id != 0) and (len(messages) > 0)
+        del_track_ids = {f"{chat_id}_{mid}" for mid in message_ids}
+        original_count = len(state.tracks)
+        state.tracks = [t for t in state.tracks if t.id not in del_track_ids]
 
+        if len(state.tracks) < original_count:
+            logger.info("🗑️ Removed %d deleted tracks from active chat %d", original_count - len(state.tracks), chat_id)
+            self._on_tracks_deleted(chat_id, list(del_track_ids))
+
+    def _parse_message_tracks(self, chat_id: int, messages: list[dict[str, Any]]) -> list[Track]:
         chunk_tracks: list[Track] = []
         for msg in messages:
             content = msg.get("content", {})
@@ -129,7 +146,7 @@ class TrackHandler:
                     size_bytes=file_obj.get("size", 0) or file_obj.get("expected_size", 0),
                     file_name=audio.get("file_name", ""),
                     mime_type=audio.get("mime_type", "audio/mpeg"),
-                    local_path=path if (local_file.get("is_downloading_completed") and Path(path).exists()) else None,
+                    local_path=path if local_file.get("is_downloading_completed") else None,
                     is_downloaded=local_file.get("is_downloading_completed", False),
                     date_timestamp=msg_date,
                     minithumbnail_data=minithumb_data,
@@ -184,7 +201,7 @@ class TrackHandler:
                         size_bytes=file_obj.get("size", 0) or file_obj.get("expected_size", 0),
                         file_name=file_name,
                         mime_type=mime_type or "audio/mpeg",
-                        local_path=path if (local_file.get("is_downloading_completed") and Path(path).exists()) else None,
+                        local_path=path if local_file.get("is_downloading_completed") else None,
                         is_downloaded=local_file.get("is_downloading_completed", False),
                         date_timestamp=msg_date,
                         minithumbnail_data=minithumb_data,
@@ -192,12 +209,40 @@ class TrackHandler:
                         cover_path=cover_path,
                     )
                     chunk_tracks.append(track)
+        return chunk_tracks
+
+    def process_search_response(
+        self, chat_id: int, messages: list[dict[str, Any]], next_from_id: int, is_initial: bool
+    ) -> None:
+        state = self._track_pagination.get(chat_id)
+        if not state:
+            state = ChatTrackPaginationState(chat_id=chat_id)
+            self._track_pagination[chat_id] = state
+
+        state.is_loading = False
+        state.next_from_message_id = next_from_id
+        state.has_more = (next_from_id != 0) and (len(messages) > 0)
+
+        chunk_tracks = self._parse_message_tracks(chat_id, messages)
 
         if is_initial:
             state.tracks = list(chunk_tracks)
-            logger.info("Initial chunk for chat %d: %d tracks (has_more: %s)", chat_id, len(chunk_tracks), state.has_more)
             self._on_initial_chunk_loaded(chat_id, state.tracks, state.has_more)
         else:
             state.tracks.extend(chunk_tracks)
-            logger.info("Lazy chunk for chat %d: %d new tracks (total: %d, has_more: %s)", chat_id, len(chunk_tracks), len(state.tracks), state.has_more)
             self._on_lazy_chunk_appended(chat_id, chunk_tracks, state.has_more)
+
+    def process_sync_response(self, chat_id: int, messages: list[dict[str, Any]]) -> None:
+        state = self._track_pagination.get(chat_id)
+        if not state or not state.tracks:
+            return
+
+        latest_tracks = self._parse_message_tracks(chat_id, messages)
+        existing_ids = {t.id for t in state.tracks}
+
+        newly_added = [t for t in latest_tracks if t.id not in existing_ids]
+
+        if newly_added:
+            logger.info("✨ Found %d brand new tracks via Delta-Sync for chat %d!", len(newly_added), chat_id)
+            state.tracks = newly_added + state.tracks
+            self._on_delta_tracks_prepended(chat_id, newly_added)

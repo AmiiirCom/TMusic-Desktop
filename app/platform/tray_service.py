@@ -12,28 +12,26 @@ logger = logging.getLogger("tmusic.platform.tray")
 def create_default_tray_icon() -> QIcon:
     """Generate a clean Telegram-blue circular musical note icon."""
     pixmap = QPixmap(64, 64)
-    pixmap.fill(QColor(0, 0, 0, 0))  # Transparent
+    pixmap.fill(QColor(0, 0, 0, 0))
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    # Blue circle
     painter.setBrush(QColor("#2481cc"))
     painter.setPen(QColor(0, 0, 0, 0))
     painter.drawEllipse(2, 2, 60, 60)
 
-    # Note text
     painter.setPen(QColor("#ffffff"))
     font = QFont("Segoe UI Emoji", 24, QFont.Weight.Bold)
     painter.setFont(font)
-    painter.drawText(pixmap.rect(), 0x0084, "🎵")  # AlignCenter
+    painter.drawText(pixmap.rect(), 0x0084, "🎵")
     painter.end()
 
     return QIcon(pixmap)
 
 
 class TrayService(QObject):
-    """System tray integration with background playback menu."""
+    """System tray integration with background playback menu and safe null handling."""
 
     show_window_requested = Signal()
     quit_requested = Signal()
@@ -116,7 +114,13 @@ class TrayService(QObject):
         ):
             self.show_window_requested.emit()
 
-    def _on_track_changed(self, track: Track) -> None:
+    def _on_track_changed(self, track: Track | None) -> None:
+        """Update tray menu text safely when track changes or is cleared."""
+        if track is None:
+            self.track_info_action.setText("🎵 TMusic Player")
+            self._tray.setToolTip("TMusic Desktop")
+            return
+
         self.track_info_action.setText(f"🎵 {track.display_title[:25]}")
         self._tray.setToolTip(f"TMusic: {track.display_title} - {track.display_artist}")
 

@@ -74,7 +74,7 @@ def create_playerbar_cover_pixmap(
 
 
 class PlayerBar(QFrame):
-    """Telegram Desktop styled bottom audio player bar with Lyrics and Metadata buttons."""
+    """Telegram Desktop styled bottom audio player bar with full reset support."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
@@ -273,7 +273,6 @@ class PlayerBar(QFrame):
         right_layout = QHBoxLayout(right_container)
         right_layout.setSpacing(8)
 
-        # Lyrics Button (Disabled by default, enabled when lyrics detected)
         self.btn_lyrics = QPushButton("📝")
         self.btn_lyrics.setObjectName("btnLyrics")
         self.btn_lyrics.setToolTip("متن آهنگ (Lyrics)")
@@ -281,7 +280,6 @@ class PlayerBar(QFrame):
         self.btn_lyrics.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lyrics.clicked.connect(self.lyrics_clicked.emit)
 
-        # Track Details & Metadata Button
         self.btn_info = QPushButton("ℹ️")
         self.btn_info.setObjectName("btnInfo")
         self.btn_info.setToolTip("مشخصات و متادیتا")
@@ -289,7 +287,6 @@ class PlayerBar(QFrame):
         self.btn_info.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_info.clicked.connect(self.track_info_clicked.emit)
 
-        # Speed Button
         self.btn_speed = QPushButton("1.0x")
         self.btn_speed.setObjectName("btnSpeed")
         self.btn_speed.setToolTip("سرعت پخش")
@@ -350,17 +347,34 @@ class PlayerBar(QFrame):
         self._current_speed = speed
         self.btn_speed.setText(f"{speed}x")
 
-    def set_track(self, track: Track) -> None:
+    def set_track(self, track: Track | None) -> None:
+        if track is None:
+            self.reset_track()
+            return
+
         self._current_track = track
         self.title_label.setText(track.display_title)
         self.artist_label.setText(track.display_artist)
         self.dur_label.setText(track.formatted_duration)
         self.btn_info.setEnabled(True)
-        self.btn_lyrics.setEnabled(False)  # Reset until metadata arrives
+        self.btn_lyrics.setEnabled(False)
         self.update_cover(track.cover_path)
 
+    def reset_track(self) -> None:
+        """Reset player bar to idle empty state when track is deleted/stopped."""
+        self._current_track = None
+        self._duration_ms = 0
+        self.title_label.setText("آهنگی در حال پخش نیست")
+        self.artist_label.setText("TMusic Desktop")
+        self.dur_label.setText("00:00")
+        self.pos_label.setText("00:00")
+        self.slider.setValue(0)
+        self.btn_play_pause.setText("▶")
+        self.btn_lyrics.setEnabled(False)
+        self.btn_info.setEnabled(False)
+        self.artwork_badge.setPixmap(create_playerbar_cover_pixmap(size=48))
+
     def update_metadata(self, metadata: AudioMetadata) -> None:
-        """Enable lyrics button if lyrics exist in audio metadata."""
         has_lyrics = metadata.has_lyrics
         self.btn_lyrics.setEnabled(has_lyrics)
         if has_lyrics:

@@ -86,7 +86,10 @@ class TDLibAdapter:
             self._tdlib.td_json_client_destroy.argtypes = [ctypes.c_void_p]
 
             self._client = self._tdlib.td_json_client_create()
-            self.execute({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1})
+
+            # Silence noisy internal C++ logs (Stickers, StickersManager, etc.)
+            self.execute({"@type": "setLogVerbosityLevel", "new_verbosity_level": 0})
+            self.execute({"@type": "setLogStream", "log_stream": {"@type": "logStreamEmpty"}})
             logger.info("TDLib library loaded successfully from %s", self._library_path)
 
         except Exception as exc:
@@ -111,7 +114,8 @@ class TDLibAdapter:
 
         if self._tdlib:
             self._client = self._tdlib.td_json_client_create()
-            self.execute({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1})
+            self.execute({"@type": "setLogVerbosityLevel", "new_verbosity_level": 0})
+            self.execute({"@type": "setLogStream", "log_stream": {"@type": "logStreamEmpty"}})
             logger.info("TDLib fresh client instance created successfully")
 
     def send(self, query: dict[str, Any]) -> None:

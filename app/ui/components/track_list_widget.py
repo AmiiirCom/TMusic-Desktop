@@ -19,7 +19,6 @@ def create_rounded_cover_pixmap(
     size: int = 44,
     is_active: bool = False,
 ) -> QPixmap:
-    """Render a crystal-clear anti-aliased HD album artwork or fallback icon."""
     target_pixmap = QPixmap(size, size)
     target_pixmap.fill(QColor(0, 0, 0, 0))
 
@@ -33,7 +32,6 @@ def create_rounded_cover_pixmap(
 
     has_drawn = False
 
-    # 1. Prefer High-Resolution cover file if downloaded
     if cover_path and Path(cover_path).exists():
         src = QPixmap(str(cover_path))
         if not src.isNull():
@@ -43,13 +41,11 @@ def create_rounded_cover_pixmap(
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            # Center crop
             x = (scaled.width() - size) // 2
             y = (scaled.height() - size) // 2
             painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
             has_drawn = True
 
-    # 2. Fallback to fast minithumbnail preview
     if not has_drawn and minithumb_data:
         src = QPixmap()
         if src.loadFromData(minithumb_data):
@@ -64,7 +60,6 @@ def create_rounded_cover_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
             has_drawn = True
 
-    # 3. Default musical icon placeholder
     if not has_drawn:
         bg_color = QColor("#2b5278" if not is_active else "#2481cc")
         painter.fillRect(0, 0, size, size, bg_color)
@@ -97,12 +92,10 @@ class TrackItemWidget(QWidget):
         layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(14)
 
-        # 1. HD Album Artwork Cover (44x44 rounded)
         self.cover_label = QLabel()
         self.cover_label.setFixedSize(44, 44)
         self.update_cover(self.track.cover_path)
 
-        # 2. Title & Artist
         info_layout = QVBoxLayout()
         info_layout.setSpacing(3)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -117,7 +110,6 @@ class TrackItemWidget(QWidget):
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.artist_label)
 
-        # 3. Meta info: Duration, Size & Release Date
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
@@ -144,7 +136,6 @@ class TrackItemWidget(QWidget):
         layout.addLayout(meta_layout)
 
     def update_cover(self, cover_path: str | None) -> None:
-        """Update cover pixmap with HD image when downloaded."""
         pixmap = create_rounded_cover_pixmap(
             minithumb_data=self.track.minithumbnail_data,
             cover_path=cover_path or self.track.cover_path,
@@ -155,7 +146,7 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget holding the tracks with live HD covers and infinite scroll."""
+    """List widget with live delta-sync prepending, deletions, and playing indicators."""
 
     track_selected = Signal(Track)
     load_more_requested = Signal()
@@ -208,7 +199,7 @@ class TrackListWidget(QListWidget):
         if not self._current_query:
             for track in unique_new:
                 item = QListWidgetItem(self)
-                is_active = (track.id == self._active_track_id)
+                is_active = track.id == self._active_track_id
                 widget = TrackItemWidget(track, is_active=is_active)
                 item.setSizeHint(widget.sizeHint())
                 self.addItem(item)
@@ -217,12 +208,44 @@ class TrackListWidget(QListWidget):
         else:
             self.filter_tracks(self._current_query)
 
+    def prepend_tracks(self, new_tracks: list[Track]) -> None:
+        """Prepend brand new tracks to top of list during Delta-Sync."""
+        existing_ids = {t.id for t in self._all_tracks}
+        unique_new = [t for t in new_tracks if t.id not in existing_ids]
+        if not unique_new:
+            return
+
+        self._all_tracks = unique_new + self._all_tracks
+
+        if not self._current_query:
+            for idx, track in enumerate(unique_new):
+                item = QListWidgetItem()
+                is_active = track.id == self._active_track_id
+                widget = TrackItemWidget(track, is_active=is_active)
+                item.setSizeHint(widget.sizeHint())
+                self.insertItem(idx, item)
+                self.setItemWidget(item, widget)
+                self._track_widgets[track.id] = widget
+        else:
+            self.filter_tracks(self._current_query)
+
+    def remove_tracks(self, deleted_track_ids: list[str]) -> None:
+        """Remove deleted tracks from UI without resetting scroll position."""
+        del_set = set(deleted_track_ids)
+        self._all_tracks = [t for t in self._all_tracks if t.id not in del_set]
+
+        for tid in deleted_track_ids:
+            widget = self._track_widgets.pop(tid, None)
+            if widget:
+                for i in range(self.count()):
+                    item = self.item(i)
+                    if self.itemWidget(item) == widget:
+                        self.takeItem(i)
+                        break
+
     def update_track_cover(self, track_id: str, cover_path: str) -> None:
-        """Update specific track row with crystal-clear HD cover."""
-        # Update model list
         for idx, t in enumerate(self._all_tracks):
             if t.id == track_id:
-                # Replace with updated cover_path
                 self._all_tracks[idx] = Track(
                     id=t.id,
                     chat_id=t.chat_id,
@@ -270,7 +293,7 @@ class TrackListWidget(QListWidget):
         self._track_widgets.clear()
         for track in tracks:
             item = QListWidgetItem(self)
-            is_active = (track.id == self._active_track_id)
+            is_active = track.id == self._active_track_id
             widget = TrackItemWidget(track, is_active=is_active)
             item.setSizeHint(widget.sizeHint())
             self.addItem(item)

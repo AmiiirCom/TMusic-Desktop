@@ -22,17 +22,8 @@ from app.telegram.worker import TDLibWorker
 logger = logging.getLogger("tmusic.telegram.service")
 
 
-@dataclass(slots=True)
-class ChatTrackPaginationState:
-    chat_id: int
-    tracks: list[Track] = field(default_factory=list)
-    next_from_message_id: int = 0
-    is_loading: bool = False
-    has_more: bool = True
-
-
 class TelegramService(QObject):
-    """Clean Facade coordinating Telegram handlers, adaptive network timer, and tray presence."""
+    """Clean Facade with real-time deletions, delta-sync, and Qt signals."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -44,6 +35,8 @@ class TelegramService(QObject):
 
     tracks_loaded = Signal(object, list, bool)
     tracks_appended = Signal(object, list, bool)
+    tracks_prepended = Signal(object, list)
+    tracks_deleted = Signal(object, list)  # (chat_id, deleted_track_ids)
     cover_downloaded = Signal(str, str)
 
     file_download_progress = Signal(int, int, int)
@@ -65,8 +58,8 @@ class TelegramService(QObject):
         self._my_user_id: int = 0
         self._current_user: TelegramUser | None = None
         self._avatar_file_id: int = 0
+        self._active_chat_id: int = 0
 
-        # Idle countdown tracking
         self._is_active_monitoring: bool = True
         self._idle_ticks_count: int = 0
 
@@ -98,12 +91,19 @@ class TelegramService(QObject):
             register_file_path=self._media.register_completed_path,
             on_initial_chunk_loaded=self.tracks_loaded.emit,
             on_lazy_chunk_appended=self.tracks_appended.emit,
+            on_delta_tracks_prepended=self.tracks_prepended.emit,
+            on_tracks_deleted=self.tracks_deleted.emit,
         )
 
-        # 2. Adaptive Network Monitoring Timer (Default 1s active, 30s idle with 1min stop)
+        # 2. Network Stats Timer
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
+
+        # 3. 1-Minute Delta-Sync Timer
+        self._auto_sync_timer = QTimer(self)
+        self._auto_sync_timer.setInterval(60000)
+        self._auto_sync_timer.timeout.connect(self._on_auto_sync_tick)
 
     @property
     def current_user(self) -> TelegramUser | None:
@@ -117,10 +117,11 @@ class TelegramService(QObject):
         self._settings = settings_service
         self._chats.set_settings_service(settings_service)
 
+    def set_active_chat_id(self, chat_id: int) -> None:
+        self._active_chat_id = chat_id
+
     def set_online_status(self, is_online: bool) -> None:
-        """Set Telegram online/offline presence."""
         if self._adapter.is_loaded:
-            logger.info("Setting Telegram presence online=%s", is_online)
             self._adapter.send({
                 "@type": "setOption",
                 "name": "online",
@@ -128,11 +129,6 @@ class TelegramService(QObject):
             })
 
     def set_network_monitor_active(self, is_active: bool) -> None:
-        """
-        Adjust network polling:
-        - Active (playing/downloading): 1000ms (1s) continuous.
-        - Idle: 30000ms (30s), completely stops after 1 minute (2 ticks).
-        """
         self._is_active_monitoring = is_active or self._media.has_active_downloads
         self._idle_ticks_count = 0
 
@@ -141,7 +137,7 @@ class TelegramService(QObject):
             if not self._net_timer.isActive():
                 self._net_timer.start()
         else:
-            self._net_timer.setInterval(30000)  # 30 seconds interval
+            self._net_timer.setInterval(30000)
             if not self._net_timer.isActive():
                 self._net_timer.start()
 
@@ -152,8 +148,23 @@ class TelegramService(QObject):
             if cached_user:
                 self._current_user = cached_user
                 self._my_user_id = cached_user.id
-                logger.info("Loaded user profile from cache: %s ⚡", cached_user.full_name)
                 self.user_loaded.emit(cached_user)
+
+    def sync_all(self, active_chat_id: int = 0) -> None:
+        logger.info("🔄 Running Delta-Sync...")
+        if not self._adapter.is_loaded:
+            return
+
+        self._adapter.send({"@type": "getMe"})
+        self._chats.start_chat_sync()
+
+        target_chat = active_chat_id or self._active_chat_id
+        if target_chat != 0:
+            self._tracks.sync_chat_tracks(target_chat)
+
+    def _on_auto_sync_tick(self) -> None:
+        if self._auth.current_state == AuthState.READY:
+            self.sync_all(self._active_chat_id)
 
     def get_downloaded_path(self, file_id: int) -> str | None:
         return self._media.get_downloaded_path(file_id)
@@ -176,9 +187,7 @@ class TelegramService(QObject):
     def _poll_network_statistics(self) -> None:
         if not self._is_active_monitoring and not self._media.has_active_downloads:
             self._idle_ticks_count += 1
-            # After 2 ticks of 30s (1 minute total of idle), stop timer completely
             if self._idle_ticks_count >= 2:
-                logger.info("⚡ 1-minute idle threshold reached. Stopping network polling timer completely.")
                 self._net_timer.stop()
                 return
 
@@ -200,18 +209,25 @@ class TelegramService(QObject):
             self.network_traffic_received.emit(total_rx, total_tx)
             return
 
-        # B. Track Search Responses
-        if isinstance(extra, str) and extra.startswith("load_tracks_"):
-            parts = extra.split("_")
-            chat_id = int(parts[2])
-            is_initial = parts[3] == "initial"
-            if update_type in ("foundChatMessages", "messages"):
-                messages = update.get("messages", [])
-                next_from_id = update.get("next_from_message_id", 0)
-                self._tracks.process_search_response(chat_id, messages, next_from_id, is_initial)
-            elif update_type == "error" and is_initial:
-                self.tracks_loaded.emit(chat_id, [], False)
-            return
+        # B. Track Search & Sync Responses
+        if isinstance(extra, str):
+            if extra.startswith("sync_tracks_"):
+                chat_id = int(extra.replace("sync_tracks_", ""))
+                if update_type in ("foundChatMessages", "messages"):
+                    self._tracks.process_sync_response(chat_id, update.get("messages", []))
+                return
+
+            if extra.startswith("load_tracks_"):
+                parts = extra.split("_")
+                chat_id = int(parts[2])
+                is_initial = parts[3] == "initial"
+                if update_type in ("foundChatMessages", "messages"):
+                    messages = update.get("messages", [])
+                    next_from_id = update.get("next_from_message_id", 0)
+                    self._tracks.process_search_response(chat_id, messages, next_from_id, is_initial)
+                elif update_type == "error" and is_initial:
+                    self.tracks_loaded.emit(chat_id, [], False)
+                return
 
         # C. Chat Pagination
         if extra in ("load_main_chats", "load_archive_chats"):
@@ -231,6 +247,16 @@ class TelegramService(QObject):
             case "updateConnectionState":
                 state = update.get("state", {}).get("@type", "")
                 self.connection_state_changed.emit(state)
+
+            case "updateDeleteMessages":
+                is_permanent = update.get("is_permanent", True)
+                from_cache = update.get("from_cache", False)
+
+                # ONLY process real permanent server deletions (ignore local cache cleanups)
+                if is_permanent and not from_cache:
+                    chat_id = update.get("chat_id", 0)
+                    message_ids = update.get("message_ids", [])
+                    self._tracks.process_delete_messages(chat_id, message_ids)
 
             case "updateFile":
                 file_obj = update.get("file", {})
@@ -296,10 +322,12 @@ class TelegramService(QObject):
     def _on_auth_ready(self) -> None:
         self.set_online_status(True)
         self._chats.start_chat_sync()
+        self._auto_sync_timer.start()
 
     def _on_auth_closed(self) -> None:
         logger.info("TDLib closed. Recreating fresh TDLib client instance...")
         self._net_timer.stop()
+        self._auto_sync_timer.stop()
         if self._worker:
             self._worker.stop()
 
@@ -355,9 +383,7 @@ class TelegramService(QObject):
 
         if is_same_photo and cached_user:
             photo_path = cached_user.photo_path
-            logger.info("Using cached profile photo (Photo ID: %s, 0 bytes consumed) ✅", photo_id)
         elif photo_file_id > 0 and not photo_path:
-            logger.info("Downloading new/updated profile photo (Photo ID: %s)...", photo_id)
             self._avatar_file_id = photo_file_id
             self._adapter.send({
                 "@type": "downloadFile",
@@ -384,7 +410,6 @@ class TelegramService(QObject):
         if self._settings:
             self._settings.set_cached_user_profile(user)
 
-        logger.info("Authenticated user profile: %s (ID: %d)", user.full_name, user.id)
         self.user_loaded.emit(user)
 
     # --- Public Methods ---
@@ -410,6 +435,7 @@ class TelegramService(QObject):
         self._media.download_cover_file(track_id, file_id)
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
+        self.set_active_chat_id(chat_id)
         self._tracks.load_chat_tracks(chat_id, reset=reset, chunk_size=chunk_size)
 
     def load_more_tracks(self, chat_id: int) -> None:
@@ -442,10 +468,12 @@ class TelegramService(QObject):
         })
 
     def log_out(self) -> None:
-        logger.info("Submitting logOut request to TDLib...")
+        self._net_timer.stop()
+        self._auto_sync_timer.stop()
         self._adapter.send({"@type": "logOut"})
 
     def stop(self) -> None:
         self._net_timer.stop()
+        self._auto_sync_timer.stop()
         if self._worker:
             self._worker.stop()

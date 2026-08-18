@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
+        self._main_view.refresh_requested.connect(self._on_manual_refresh)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
 
         # 2. Login View
@@ -133,11 +134,12 @@ class MainWindow(QMainWindow):
         self._telegram.owned_chats_loaded.connect(self._main_view.set_owned_chats)
         self._telegram.tracks_loaded.connect(self._on_initial_tracks_loaded)
         self._telegram.tracks_appended.connect(self._on_tracks_appended)
+        self._telegram.tracks_prepended.connect(self._on_tracks_prepended)
+        self._telegram.tracks_deleted.connect(self._main_view.remove_tracks)
+        self._telegram.tracks_deleted.connect(self._player.remove_from_playlist)
 
-        # Emit cached state (channels + user avatar) instantly
         self._telegram.load_cached_state()
 
-        # Apply saved proxy automatically on launch
         self._apply_saved_proxy()
 
     def _apply_saved_proxy(self) -> None:
@@ -150,18 +152,16 @@ class MainWindow(QMainWindow):
                 self._telegram.set_http_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Minimize to system tray and switch Telegram status to offline to save data."""
         if not self._is_quitting:
             event.ignore()
             self.hide()
-            self._telegram.set_online_status(False)  # Set offline in tray to save bandwidth
+            self._telegram.set_online_status(False)
             self._telegram.set_network_monitor_active(False)
             self._tray.show_message("TMusic", "برنامه در پس‌زمینه در حال پخش است 🎵")
         else:
             event.accept()
 
     def _restore_window(self) -> None:
-        """Restore window from tray and switch status back online."""
         self.show()
         self.raise_()
         self.activateWindow()
@@ -179,7 +179,6 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_perform_logout(self) -> None:
-        """Complete Factory Reset: Purge all session data and exit app cleanly."""
         logger.info("Performing factory reset logout: purging data directory...")
         self._is_quitting = True
 
@@ -202,6 +201,9 @@ class MainWindow(QMainWindow):
                 logger.warning("Could not wipe data directory: %s", exc)
 
         QApplication.quit()
+
+    def _on_manual_refresh(self) -> None:
+        self._telegram.sync_all()
 
     def _open_lyrics_dialog(self) -> None:
         track = self._player.current_track
@@ -255,6 +257,11 @@ class MainWindow(QMainWindow):
     def _on_tracks_appended(self, chat_id: int, new_tracks: list[Track], has_more: bool) -> None:
         self._main_view.append_tracks(new_tracks, has_more=has_more)
         self._player.append_to_playlist(new_tracks)
+
+    @Slot(object, list)
+    def _on_tracks_prepended(self, chat_id: int, new_tracks: list[Track]) -> None:
+        self._main_view.prepend_tracks(new_tracks)
+        self._player.prepend_to_playlist(new_tracks)
 
     @Slot(Track)
     def _on_track_selected(self, track: Track) -> None:
