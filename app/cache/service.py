@@ -45,11 +45,11 @@ class CacheService:
                 except Exception as exc:
                     logger.warning("Could not delete %s: %s", item, exc)
 
-        # Also clean internal temp cache
-        if self._config.tdlib_files_dir.exists():
+        # Also clean internal temp cache defensively
+        if hasattr(self._config, "tdlib_files_dir") and self._config.tdlib_files_dir.exists():
             for item in self._config.tdlib_files_dir.glob("*"):
                 try:
-                    if item.is_file():
+                    if item.is_file() or item.is_symlink():
                         item.unlink()
                     elif item.is_dir():
                         shutil.rmtree(item)

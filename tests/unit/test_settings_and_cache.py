@@ -28,18 +28,30 @@ def test_cache_calculation_and_clear(tmp_path: Path) -> None:
     downloads_dir = tmp_path / "TMusicDownloads"
     downloads_dir.mkdir()
 
+    tdlib_files_dir = tmp_path / "cache"
+    tdlib_files_dir.mkdir()
+
     file1 = downloads_dir / "track1.mp3"
     file1.write_bytes(b"A" * 1024 * 1024)
 
     file2 = downloads_dir / "track2.mp3"
     file2.write_bytes(b"B" * (512 * 1024))
 
+    # Mock temporary cache file
+    temp_file = tdlib_files_dir / "temp.dat"
+    temp_file.write_bytes(b"C" * 1024)
+
     @dataclass(slots=True)
     class MockConfig:
         root_dir: Path
         downloads_dir: Path
+        tdlib_files_dir: Path
 
-    mock_config = MockConfig(root_dir=tmp_path, downloads_dir=downloads_dir)
+    mock_config = MockConfig(
+        root_dir=tmp_path,
+        downloads_dir=downloads_dir,
+        tdlib_files_dir=tdlib_files_dir,
+    )
     cache_service = CacheService(mock_config)  # type: ignore
 
     total_bytes = cache_service.get_cache_size_bytes()
@@ -49,3 +61,4 @@ def test_cache_calculation_and_clear(tmp_path: Path) -> None:
     assert cache_service.get_cache_size_bytes() == 0
     assert not file1.exists()
     assert not file2.exists()
+    assert not temp_file.exists()
