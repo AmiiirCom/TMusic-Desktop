@@ -1,11 +1,14 @@
 import logging
 from pathlib import Path
+import shutil
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
+from app.config import AppConfig
 from app.core.metadata import AudioMetadata, extract_metadata_from_player
 from app.models.track import Track
 from app.network.stream_server import LocalStreamServer
+from app.platform.paths import has_sufficient_disk_space, sanitize_filename
 from app.telegram.service import TelegramService
 
 logger = logging.getLogger("tmusic.player.service")
@@ -13,7 +16,8 @@ logger = logging.getLogger("tmusic.player.service")
 
 class PlayerService(QObject):
     """
-    Audio playback engine with Embedded Lyrics, Metadata extraction, and Gapless Prefetching.
+    Audio playback engine prioritizing clean TMusicDownloads,
+    deferred temp cleanup, and smooth progressive streaming.
     """
 
     track_changed = Signal(Track)
@@ -21,16 +25,18 @@ class PlayerService(QObject):
     playback_rate_changed = Signal(float)
     position_changed = Signal(int)
     duration_changed = Signal(int)
-    metadata_updated = Signal(object)  # Emits AudioMetadata
+    metadata_updated = Signal(object)
     download_progress = Signal(int, int)
     error_occurred = Signal(str)
 
     def __init__(
         self,
+        config: AppConfig,
         telegram_service: TelegramService,
         stream_server: LocalStreamServer | None = None,
     ) -> None:
         super().__init__()
+        self._config = config
         self._telegram = telegram_service
         self._stream_server = stream_server
 
@@ -40,12 +46,16 @@ class PlayerService(QObject):
         self._player.setAudioOutput(self._audio_output)
         self._audio_output.setVolume(0.8)
 
-        # Playlist / Queue State
+        # Playlist & Track Registry
         self._playlist: list[Track] = []
+        self._known_tracks: dict[int, Track] = {}
         self._current_index: int = -1
         self._current_track: Track | None = None
         self._current_metadata: AudioMetadata = AudioMetadata()
         self._cached_paths: dict[int, str] = {}
+
+        # Deferred cleanup registry: file_id -> internal_temp_path
+        self._pending_temp_cleanup: dict[int, Path] = {}
 
         # Smart Prefetch Trackers
         self._has_prefetched_next: bool = False
@@ -81,6 +91,9 @@ class PlayerService(QObject):
 
     def set_playlist(self, tracks: list[Track], start_track: Track | None = None) -> None:
         self._playlist = list(tracks)
+        for t in tracks:
+            self._known_tracks[t.file_id] = t
+
         if start_track:
             self.play_track(start_track)
         elif self._current_track:
@@ -90,6 +103,9 @@ class PlayerService(QObject):
         existing_ids = {t.id for t in self._playlist}
         unique_new = [t for t in new_tracks if t.id not in existing_ids]
         self._playlist.extend(unique_new)
+        for t in unique_new:
+            self._known_tracks[t.file_id] = t
+
         if self._current_track:
             self._update_current_index(self._current_track.id)
 
@@ -99,26 +115,54 @@ class PlayerService(QObject):
                 self._current_index = idx
                 return
 
+    def _get_clean_download_destination(self, track: Track) -> Path:
+        ext = Path(track.file_name).suffix or ".mp3"
+        clean_title = sanitize_filename(f"{track.display_artist} - {track.display_title}{ext}")
+        return self._config.downloads_dir / clean_title
+
+    def _cleanup_inactive_temp_files(self) -> None:
+        """Purge temporary internal files of tracks that are no longer actively playing."""
+        current_fid = self._current_track.file_id if self._current_track else 0
+        to_delete = [fid for fid in self._pending_temp_cleanup if fid != current_fid]
+
+        for fid in to_delete:
+            path = self._pending_temp_cleanup.pop(fid, None)
+            if path and path.exists():
+                try:
+                    path.unlink(missing_ok=True)
+                    logger.info("🗑️ Safely purged temp cache for file ID %d: %s", fid, path.name)
+                except Exception as exc:
+                    logger.debug("Deferred purge error for %s: %s", path, exc)
+
     def play_track(self, track: Track) -> None:
         self._current_track = track
+        self._known_tracks[track.file_id] = track
         self._has_prefetched_next = False
         self._current_metadata = AudioMetadata(title=track.display_title, artist=track.display_artist)
         self._update_current_index(track.id)
         self.track_changed.emit(track)
         self.metadata_updated.emit(self._current_metadata)
 
-        cached_path = (
-            self._cached_paths.get(track.file_id)
-            or self._telegram.get_downloaded_path(track.file_id)
-            or track.local_path
-        )
+        # Cleanup old completed temp files that are no longer playing
+        self._cleanup_inactive_temp_files()
 
-        if cached_path and Path(cached_path).exists():
-            self._cached_paths[track.file_id] = cached_path
-            logger.info("Playing from local file cache: %s", cached_path)
+        # 1. Primary Check: Clean TMusicDownloads
+        clean_file = self._get_clean_download_destination(track)
+        if clean_file.exists() and clean_file.stat().st_size > 0:
+            self._cached_paths[track.file_id] = str(clean_file)
+            self._telegram.register_downloaded_path(track.file_id, str(clean_file))
+            logger.info("⚡ Instant play from clean TMusicDownloads: %s", clean_file)
+            self._start_playback_source(QUrl.fromLocalFile(str(clean_file.resolve())))
+            return
+
+        # 2. Fallback Check: Internal cache path
+        cached_path = self._cached_paths.get(track.file_id) or self._telegram.get_downloaded_path(track.file_id)
+        if cached_path and Path(cached_path).exists() and Path(cached_path).stat().st_size > 0:
+            logger.info("Playing from fallback cache path: %s", cached_path)
             self._start_playback_source(QUrl.fromLocalFile(str(Path(cached_path).resolve())))
             return
 
+        # 3. Progressive Live Streaming
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
             logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
@@ -185,12 +229,11 @@ class PlayerService(QObject):
         next_idx = (self._current_index + 1) % len(self._playlist)
         next_track = self._playlist[next_idx]
 
-        cached_path = (
-            self._cached_paths.get(next_track.file_id)
-            or self._telegram.get_downloaded_path(next_track.file_id)
-            or next_track.local_path
-        )
+        clean_file = self._get_clean_download_destination(next_track)
+        if clean_file.exists() and clean_file.stat().st_size > 0:
+            return
 
+        cached_path = self._cached_paths.get(next_track.file_id) or self._telegram.get_downloaded_path(next_track.file_id)
         if not (cached_path and Path(cached_path).exists()):
             self._telegram.prefetch_audio_file(next_track.file_id)
 
@@ -199,15 +242,8 @@ class PlayerService(QObject):
 
     @Slot()
     def _on_media_metadata_changed(self) -> None:
-        """Invoked when FFmpeg/Qt finishes loading ID3 metadata and lyrics."""
         local_path = self._cached_paths.get(self._current_track.file_id) if self._current_track else None
         self._current_metadata = extract_metadata_from_player(self._player, local_path)
-        logger.info(
-            "Metadata extracted (Album: '%s', Bitrate: %d kb/s, Has Lyrics: %s)",
-            self._current_metadata.album,
-            self._current_metadata.bitrate_kbps,
-            self._current_metadata.has_lyrics,
-        )
         self.metadata_updated.emit(self._current_metadata)
 
     @Slot(int)
@@ -221,10 +257,53 @@ class PlayerService(QObject):
         self.duration_changed.emit(duration_ms)
 
     @Slot(int, str)
-    def _on_file_download_completed(self, file_id: int, local_path: str) -> None:
-        self._cached_paths[file_id] = local_path
-        logger.info("File ID %d finished downloading and saved to disk: %s", file_id, local_path)
-        # Re-extract metadata with full file if needed
+    def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
+        """
+        Export completed download to clean TMusicDownloads folder,
+        register to stream server for fast serving, and queue temp file for deferred purge.
+        """
+        internal_path = Path(internal_path_str)
+
+        # Identify matching track
+        matching_track = self._known_tracks.get(file_id)
+        if not matching_track:
+            if self._current_track and self._current_track.file_id == file_id:
+                matching_track = self._current_track
+            else:
+                for t in self._playlist:
+                    if t.file_id == file_id:
+                        matching_track = t
+                        break
+
+        if matching_track and internal_path.exists():
+            dest_file = self._get_clean_download_destination(matching_track)
+            src_size = internal_path.stat().st_size
+
+            try:
+                self._config.downloads_dir.mkdir(parents=True, exist_ok=True)
+
+                if has_sufficient_disk_space(self._config.downloads_dir, matching_track.size_bytes):
+                    if not dest_file.exists() or dest_file.stat().st_size != src_size:
+                        shutil.copy2(internal_path, dest_file)
+
+                    if dest_file.exists() and dest_file.stat().st_size == src_size:
+                        self._cached_paths[file_id] = str(dest_file)
+                        self._telegram.register_downloaded_path(file_id, str(dest_file))
+
+                        # Notify stream server to switch to clean disk file instantly
+                        if self._stream_server:
+                            self._stream_server.register_completed_file(file_id, str(dest_file))
+
+                        logger.info("✅ Exported to TMusicDownloads: %s", dest_file.name)
+
+                        # Queue temp file for safe deletion once playback moves to another track
+                        self._pending_temp_cleanup[file_id] = internal_path
+
+            except Exception as exc:
+                logger.warning("Could not export clean audio to %s: %s", dest_file, exc)
+                self._cached_paths[file_id] = str(internal_path)
+                self._telegram.register_downloaded_path(file_id, str(internal_path))
+
         if self._current_track and self._current_track.file_id == file_id:
             self._on_media_metadata_changed()
 
@@ -241,5 +320,6 @@ class PlayerService(QObject):
     @Slot(QMediaPlayer.MediaStatus)
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            logger.info("Track reached end. Transitioning to next...")
+            logger.info("Track reached end. Purging temp cache and advancing to next...")
+            self._cleanup_inactive_temp_files()
             self.play_next()

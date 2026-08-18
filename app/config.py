@@ -7,11 +7,9 @@ from app.platform.paths import get_default_downloads_dir
 
 
 def _load_env(env_path: Path) -> dict[str, str]:
-    """Simple zero-dependency .env reader."""
     env_vars: dict[str, str] = {}
     if not env_path.exists():
         return env_vars
-
     try:
         content = env_path.read_text(encoding="utf-8")
         for line in content.splitlines():
@@ -51,7 +49,7 @@ def _get_api_hash() -> str:
 @dataclass(slots=True, frozen=True)
 class AppConfig:
     app_name: str = "TMusic"
-    app_version: str = "0.1.0"
+    app_version: str = "1.0.0"
     organization_name: str = "TMusicOrg"
     organization_domain: str = "tmusic.local"
 
@@ -63,7 +61,10 @@ class AppConfig:
     data_dir: Path = _ROOT_DIR / "data"
     tdlib_dir: Path = _ROOT_DIR / "data" / "tdlib"
 
-    # Native OS Downloads / TMusicDownloads
+    # Internal cache for TDLib temp/subfolder files (kept private from user)
+    tdlib_files_dir: Path = _ROOT_DIR / "data" / "cache"
+
+    # Clean User-facing Downloads Folder (Contains ONLY completed audio tracks)
     downloads_dir: Path = field(default_factory=get_default_downloads_dir)
 
     # Loaded Telegram API credentials
@@ -73,4 +74,8 @@ class AppConfig:
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.tdlib_dir.mkdir(parents=True, exist_ok=True)
-        self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        self.tdlib_files_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass

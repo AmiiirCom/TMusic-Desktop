@@ -8,7 +8,7 @@ logger = logging.getLogger("tmusic.cache.service")
 
 
 class CacheService:
-    """Manages downloaded media files and downloads directory usage."""
+    """Manages downloaded media files inside clean TMusicDownloads folder and internal cache."""
 
     def __init__(self, config: AppConfig) -> None:
         self._config = config
@@ -18,10 +18,10 @@ class CacheService:
         return self._config.downloads_dir
 
     def get_cache_size_bytes(self) -> int:
-        """Calculate total disk usage of downloaded media in bytes."""
+        """Calculate total disk usage of completed music files in TMusicDownloads."""
         total = 0
         if self._config.downloads_dir.exists():
-            for p in self._config.downloads_dir.rglob("*"):
+            for p in self._config.downloads_dir.glob("*"):
                 if p.is_file():
                     total += p.stat().st_size
         return total
@@ -33,15 +33,26 @@ class CacheService:
         return f"{size / (1024 * 1024):.1f} MB"
 
     def clear_cache(self) -> None:
-        """Clear all downloaded media files safely."""
-        logger.info("Clearing downloaded media files from %s...", self._config.downloads_dir)
+        """Clear all downloaded music files in TMusicDownloads and internal temp cache."""
+        logger.info("Clearing clean music files from %s...", self._config.downloads_dir)
         if self._config.downloads_dir.exists():
-            for item in self._config.downloads_dir.iterdir():
+            for item in self._config.downloads_dir.glob("*"):
                 try:
                     if item.is_file() or item.is_symlink():
                         item.unlink()
                     elif item.is_dir():
                         shutil.rmtree(item)
                 except Exception as exc:
-                    logger.warning("Could not delete file %s: %s", item, exc)
-        logger.info("Downloads directory cleared successfully.")
+                    logger.warning("Could not delete %s: %s", item, exc)
+
+        # Also clean internal temp cache
+        if self._config.tdlib_files_dir.exists():
+            for item in self._config.tdlib_files_dir.glob("*"):
+                try:
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                except Exception:
+                    pass
+        logger.info("Downloads and internal temp cache cleared successfully.")

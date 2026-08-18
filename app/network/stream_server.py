@@ -1,6 +1,7 @@
 import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import logging
+from pathlib import Path
 import re
 import socket
 import threading
@@ -13,13 +14,12 @@ logger = logging.getLogger("tmusic.network.stream")
 
 
 class TDLibStreamHandler(BaseHTTPRequestHandler):
-    """Precision HTTP Handler supporting Range requests and exact chunk boundaries."""
+    """Precision HTTP Handler supporting live TDLib stream and fast local disk fallback."""
 
     adapter: TDLibAdapter | None = None
     server_ref: Any = None
 
     def log_message(self, format: str, *args: Any) -> None:
-        """Suppress standard HTTP server console noise."""
         return
 
     def do_GET(self) -> None:
@@ -41,7 +41,7 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
             "synchronous": False,
         })
 
-        # 2. Parse HTTP Range header if requested by player for seeking
+        # 2. Parse Range header if present
         range_header = self.headers.get("Range")
         start_offset = 0
         end_offset = file_size - 1 if file_size > 0 else None
@@ -62,6 +62,11 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
         retries = 0
 
         while retries < 60:
+            # Check if file has already finished downloading to disk
+            completed_file = self.server_ref.get_completed_path(file_id) if self.server_ref else None
+            if completed_file and Path(completed_file).exists() and Path(completed_file).stat().st_size > offset:
+                break
+
             res = self.adapter.request_sync({
                 "@type": "readFilePart",
                 "file_id": file_id,
@@ -81,11 +86,7 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
             time.sleep(0.08)
             retries += 1
 
-        if not first_chunk:
-            self.send_error(504, "Stream buffer timeout")
-            return
-
-        # 4. Send HTTP Headers (206 if Range requested, 200 otherwise)
+        # 4. Send HTTP 200/206 Response Headers
         if range_header and file_size > 0 and end_offset is not None:
             content_len = end_offset - start_offset + 1
             self.send_response(206)
@@ -101,25 +102,45 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-        # Write first chunk
-        try:
-            self.wfile.write(first_chunk)
-            self.wfile.flush()
-        except Exception:
-            return
+        # Write first chunk if obtained via readFilePart
+        if first_chunk:
+            try:
+                self.wfile.write(first_chunk)
+                self.wfile.flush()
+                offset += len(first_chunk)
+            except Exception:
+                return
 
-        offset += len(first_chunk)
-
-        # 5. Continuous Progressive Streaming Loop with Exact Boundary Capping
+        # 5. Streaming Loop (Switches to fast disk reading as soon as file completes)
         empty_retries = 0
         while empty_retries < 150:
             if file_size > 0 and offset >= file_size:
-                break  # Stream reached exact 100% end of file!
+                break
 
             if end_offset and offset > end_offset:
                 break
 
-            # Cap requested count to remaining bytes so TDLib never rejects the final chunk
+            # Fast Path: If download finished to disk, stream remaining bytes directly from disk file!
+            completed_file = self.server_ref.get_completed_path(file_id) if self.server_ref else None
+            if completed_file and Path(completed_file).exists() and Path(completed_file).stat().st_size > offset:
+                try:
+                    with open(completed_file, "rb") as f:
+                        f.seek(offset)
+                        while True:
+                            rem = (file_size - offset) if file_size > 0 else chunk_size
+                            if rem <= 0:
+                                break
+                            buf = f.read(min(chunk_size, rem))
+                            if not buf:
+                                break
+                            self.wfile.write(buf)
+                            self.wfile.flush()
+                            offset += len(buf)
+                    break
+                except Exception:
+                    break
+
+            # Progressive TDLib readFilePart Loop
             if file_size > 0:
                 remaining = file_size - offset
                 if remaining <= 0:
@@ -151,7 +172,7 @@ class TDLibStreamHandler(BaseHTTPRequestHandler):
                 empty_retries += 1
 
             except (BrokenPipeError, ConnectionResetError):
-                break  # Player paused, seeked, or switched track
+                break
             except Exception:
                 break
 
@@ -165,6 +186,7 @@ class LocalStreamServer:
         self._thread: threading.Thread | None = None
         self._port = 0
         self._file_sizes: dict[int, int] = {}
+        self._completed_paths: dict[int, str] = {}
         self._start_server()
 
     def _find_free_port(self) -> int:
@@ -186,6 +208,13 @@ class LocalStreamServer:
         if size_bytes > 0:
             self._file_sizes[file_id] = size_bytes
         return f"http://127.0.0.1:{self._port}/stream/{file_id}"
+
+    def register_completed_file(self, file_id: int, local_path: str) -> None:
+        """Register completed file path for instant local disk serving."""
+        self._completed_paths[file_id] = local_path
+
+    def get_completed_path(self, file_id: int) -> str | None:
+        return self._completed_paths.get(file_id)
 
     def get_file_size(self, file_id: int) -> int:
         return self._file_sizes.get(file_id, 0)

@@ -18,7 +18,7 @@ logger = logging.getLogger("tmusic.telegram.service")
 
 
 class TelegramService(QObject):
-    """Clean Facade coordinating Telegram handlers and Qt signals."""
+    """Clean Facade coordinating Telegram handlers, media registry, and Qt signals."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -102,6 +102,9 @@ class TelegramService(QObject):
 
     def get_downloaded_path(self, file_id: int) -> str | None:
         return self._media.get_downloaded_path(file_id)
+
+    def register_downloaded_path(self, file_id: int, path: str) -> None:
+        self._media.register_completed_path(file_id, path)
 
     def start(self) -> None:
         if not self._adapter.is_loaded:
@@ -196,7 +199,6 @@ class TelegramService(QObject):
             case "error":
                 code = update.get("code")
                 msg = update.get("message", "")
-                # Ignore 404 (exhausted list) and transient streaming buffer messages
                 transient_msgs = (
                     "There is not enough downloaded bytes",
                     "Failed to read the file",
@@ -259,8 +261,7 @@ class TelegramService(QObject):
     def load_more_tracks(self, chat_id: int) -> None:
         self._tracks.load_chat_tracks(chat_id, reset=False)
 
-    def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = ""
-    ) -> None:
+    def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
         self._adapter.send({
             "@type": "addProxy",
             "proxy": {

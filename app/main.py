@@ -253,7 +253,7 @@ def main() -> int:
     stream_server = LocalStreamServer(tdlib_adapter)
     telegram_service = TelegramService(config, tdlib_adapter, settings_service)
 
-    player_service = PlayerService(telegram_service, stream_server)
+    player_service = PlayerService(config, telegram_service, stream_server)
     cache_service = CacheService(config)
     network_meter = NetworkMeter()
 

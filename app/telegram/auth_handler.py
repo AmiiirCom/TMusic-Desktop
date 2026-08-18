@@ -9,7 +9,7 @@ logger = logging.getLogger("tmusic.telegram.auth")
 
 
 class AuthHandler:
-    """Manages TDLib authorization state machine and credential submissions."""
+    """Manages TDLib authorization state machine and internal file storage paths."""
 
     def __init__(
         self,
@@ -29,7 +29,6 @@ class AuthHandler:
         return self._auth_state
 
     def process_update(self, auth_state_obj: dict[str, Any]) -> None:
-        """Process updateAuthorizationState from TDLib."""
         state_type = auth_state_obj.get("@type", "")
         logger.info("TDLib Auth State: %s", state_type)
 
@@ -69,7 +68,7 @@ class AuthHandler:
             "@type": "setTdlibParameters",
             "use_test_dc": False,
             "database_directory": str(self._config.tdlib_dir),
-            "files_directory": str(self._config.downloads_dir),
+            "files_directory": str(self._config.tdlib_files_dir),  # Private internal cache
             "use_file_database": True,
             "use_chat_info_database": True,
             "use_message_database": True,
