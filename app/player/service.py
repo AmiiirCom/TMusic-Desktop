@@ -4,13 +4,16 @@ from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from app.models.track import Track
+from app.network.stream_server import LocalStreamServer
 from app.telegram.service import TelegramService
 
 logger = logging.getLogger("tmusic.player.service")
 
 
 class PlayerService(QObject):
-    """Core audio playback engine orchestrating QtMultimedia and TDLib downloads."""
+    """
+    Audio playback engine with Instant Progressive Streaming and Smart Next-Track Prefetching.
+    """
 
     track_changed = Signal(Track)
     playback_state_changed = Signal(bool)
@@ -20,9 +23,14 @@ class PlayerService(QObject):
     download_progress = Signal(int, int)
     error_occurred = Signal(str)
 
-    def __init__(self, telegram_service: TelegramService) -> None:
+    def __init__(
+        self,
+        telegram_service: TelegramService,
+        stream_server: LocalStreamServer | None = None,
+    ) -> None:
         super().__init__()
         self._telegram = telegram_service
+        self._stream_server = stream_server
 
         # Qt Multimedia engine
         self._player = QMediaPlayer(self)
@@ -34,12 +42,15 @@ class PlayerService(QObject):
         self._playlist: list[Track] = []
         self._current_index: int = -1
         self._current_track: Track | None = None
-        self._pending_track: Track | None = None
         self._cached_paths: dict[int, str] = {}
 
+        # Smart Prefetch Trackers
+        self._has_prefetched_next: bool = False
+        self._last_duration_ms: int = 0
+
         # Wire Qt Multimedia signals
-        self._player.positionChanged.connect(self.position_changed.emit)
-        self._player.durationChanged.connect(self.duration_changed.emit)
+        self._player.positionChanged.connect(self._on_position_changed)
+        self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
         self._player.playbackRateChanged.connect(self.playback_rate_changed.emit)
         self._player.mediaStatusChanged.connect(self._on_media_status_changed)
@@ -81,10 +92,13 @@ class PlayerService(QObject):
                 return
 
     def play_track(self, track: Track) -> None:
+        """Start playback instantly (from local file if cached, or progressive HTTP stream)."""
         self._current_track = track
+        self._has_prefetched_next = False
         self._update_current_index(track.id)
         self.track_changed.emit(track)
 
+        # 1. If already 100% completed on disk -> Play directly from file
         cached_path = (
             self._cached_paths.get(track.file_id)
             or self._telegram.get_downloaded_path(track.file_id)
@@ -93,17 +107,20 @@ class PlayerService(QObject):
 
         if cached_path and Path(cached_path).exists():
             self._cached_paths[track.file_id] = cached_path
-            self._start_playback(cached_path)
+            logger.info("Playing from local file cache: %s", cached_path)
+            self._start_playback_source(QUrl.fromLocalFile(str(Path(cached_path).resolve())))
             return
 
-        logger.info("Track '%s' not cached. Requesting TDLib download...", track.display_title)
-        self._pending_track = track
-        self._telegram.download_file(track.file_id)
+        # 2. Instant Progressive Streaming (Plays in ~0.2s without waiting for full download!)
+        if self._stream_server:
+            stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
+            logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
+            self._start_playback_source(QUrl(stream_url))
+        else:
+            self._telegram.download_file(track.file_id)
 
-    def _start_playback(self, file_path: str) -> None:
-        resolved_path = Path(file_path).resolve()
-        logger.info("Starting audio playback: %s (Rate: %.2fx)", resolved_path, self._player.playbackRate())
-        self._player.setSource(QUrl.fromLocalFile(str(resolved_path)))
+    def _start_playback_source(self, url: QUrl) -> None:
+        self._player.setSource(url)
         self._player.play()
 
     def toggle_play_pause(self) -> None:
@@ -136,26 +153,61 @@ class PlayerService(QObject):
         self._audio_output.setVolume(vol)
 
     def set_playback_rate(self, rate: float) -> None:
-        """Set audio playback rate (0.75, 1.0, 1.25, 1.5, 1.75)."""
         clamped_rate = max(0.5, min(2.0, rate))
-        logger.info("Setting audio playback rate to: %.2fx", clamped_rate)
         self._player.setPlaybackRate(clamped_rate)
         self.playback_rate_changed.emit(clamped_rate)
 
     def set_muted(self, muted: bool) -> None:
         self._audio_output.setMuted(muted)
 
+    def _check_smart_prefetch(self, position_ms: int, duration_ms: int) -> None:
+        if duration_ms <= 0 or self._has_prefetched_next or not self.is_playing:
+            return
+
+        progress = position_ms / duration_ms
+        remaining_sec = (duration_ms - position_ms) / 1000
+
+        if progress >= 0.70 or (duration_ms > 45_000 and remaining_sec <= 30):
+            self._has_prefetched_next = True
+            self._prefetch_upcoming_track()
+
+    def _prefetch_upcoming_track(self) -> None:
+        if not self._playlist or len(self._playlist) <= 1:
+            return
+
+        next_idx = (self._current_index + 1) % len(self._playlist)
+        next_track = self._playlist[next_idx]
+
+        cached_path = (
+            self._cached_paths.get(next_track.file_id)
+            or self._telegram.get_downloaded_path(next_track.file_id)
+            or next_track.local_path
+        )
+
+        if not (cached_path and Path(cached_path).exists()):
+            self._telegram.prefetch_audio_file(next_track.file_id)
+
+        if next_track.cover_file_id and not next_track.cover_path:
+            self._telegram.prefetch_cover_file(next_track.id, next_track.cover_file_id)
+
+    @Slot(int)
+    def _on_position_changed(self, position_ms: int) -> None:
+        self.position_changed.emit(position_ms)
+        self._check_smart_prefetch(position_ms, self._last_duration_ms)
+
+    @Slot(int)
+    def _on_duration_changed(self, duration_ms: int) -> None:
+        self._last_duration_ms = duration_ms
+        self.duration_changed.emit(duration_ms)
+
     @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, local_path: str) -> None:
         self._cached_paths[file_id] = local_path
-        if self._pending_track and self._pending_track.file_id == file_id:
-            logger.info("Download finished for pending track: %s", self._pending_track.display_title)
-            self._pending_track = None
-            self._start_playback(local_path)
+        logger.info("File ID %d finished downloading and saved to disk: %s", file_id, local_path)
 
     @Slot(int, int, int)
     def _on_file_download_progress(self, file_id: int, downloaded: int, total: int) -> None:
-        if self._pending_track and self._pending_track.file_id == file_id:
+        if self._current_track and self._current_track.file_id == file_id:
             self.download_progress.emit(downloaded, total)
 
     @Slot(QMediaPlayer.PlaybackState)
@@ -166,5 +218,5 @@ class PlayerService(QObject):
     @Slot(QMediaPlayer.MediaStatus)
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            logger.info("Track finished playing. Auto-advancing to next...")
+            logger.info("Track reached end. Transitioning to next...")
             self.play_next()

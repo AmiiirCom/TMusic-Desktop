@@ -8,7 +8,7 @@ logger = logging.getLogger("tmusic.telegram.media")
 
 
 class MediaHandler:
-    """Manages audio file streaming downloads and HD cover art downloads."""
+    """Manages audio file streaming downloads, HD cover art, and smart prefetching."""
 
     def __init__(
         self,
@@ -37,19 +37,36 @@ class MediaHandler:
             self._file_id_to_path[file_id] = path
 
     def download_audio_file(self, file_id: int) -> None:
+        """Download with MAXIMUM priority (32) for immediate playback."""
         if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
             self._on_audio_completed(file_id, self._file_id_to_path[file_id])
             return
 
-        if file_id in self._downloading_audio_files:
-            return
-
         self._downloading_audio_files.add(file_id)
-        logger.info("Requesting TDLib download for audio file ID: %d", file_id)
+        logger.info("Requesting immediate playback download for file ID: %d (Priority 32)", file_id)
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
             "priority": 32,
+            "offset": 0,
+            "limit": 0,
+            "synchronous": False,
+        })
+
+    def prefetch_audio_file(self, file_id: int) -> None:
+        """Smart pre-download of upcoming track with background priority (16)."""
+        if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
+            return
+
+        if file_id in self._downloading_audio_files:
+            return  # Already in download queue
+
+        self._downloading_audio_files.add(file_id)
+        logger.info("⚡ Smart Pre-fetching next track file ID: %d (Background Priority 16)", file_id)
+        self._adapter.send({
+            "@type": "downloadFile",
+            "file_id": file_id,
+            "priority": 16,
             "offset": 0,
             "limit": 0,
             "synchronous": False,
@@ -85,12 +102,12 @@ class MediaHandler:
         if is_completed and path:
             self._file_id_to_path[file_id] = path
 
-            # 1. Check if this is an HD album cover
+            # 1. HD album cover thumbnail
             track_id = self._cover_file_to_track_id.get(file_id)
             if track_id:
                 self._on_cover_completed(track_id, path)
 
-            # 2. Check if this is an audio file
+            # 2. Audio track
             if file_id in self._downloading_audio_files:
                 self._downloading_audio_files.discard(file_id)
                 logger.info("Audio file %d download completed: %s", file_id, path)

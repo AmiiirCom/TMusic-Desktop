@@ -13,6 +13,7 @@ from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
 from app.network.meter import NetworkMeter
+from app.network.stream_server import LocalStreamServer
 from app.player.service import PlayerService
 from app.platform.tray_service import TrayService
 from app.settings.service import SettingsService
@@ -225,9 +226,10 @@ def main() -> int:
     settings_service = SettingsService(config.data_dir, crypto_manager)
 
     tdlib_adapter = TDLibAdapter()
+    stream_server = LocalStreamServer(tdlib_adapter)
     telegram_service = TelegramService(config, tdlib_adapter, settings_service)
 
-    player_service = PlayerService(telegram_service)
+    player_service = PlayerService(telegram_service, stream_server)
     cache_service = CacheService(config)
     network_meter = NetworkMeter()
 
@@ -245,6 +247,8 @@ def main() -> int:
 
     exit_code = app.exec()
 
+    # Clean shutdown
+    stream_server.stop()
     telegram_service.stop()
     tdlib_adapter.close()
     logger.info("Application exited cleanly with code %d", exit_code)

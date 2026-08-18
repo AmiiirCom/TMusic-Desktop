@@ -20,7 +20,6 @@ logger = logging.getLogger("tmusic.telegram.service")
 class TelegramService(QObject):
     """Clean Facade coordinating Telegram handlers and Qt signals."""
 
-    # Public UI Signals
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
     connection_state_changed = Signal(str)
@@ -81,7 +80,7 @@ class TelegramService(QObject):
             on_lazy_chunk_appended=self.tracks_appended.emit,
         )
 
-        # 2. Network Statistics Polling Timer
+        # 2. Network Statistics Poller Timer
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
@@ -196,8 +195,14 @@ class TelegramService(QObject):
 
             case "error":
                 code = update.get("code")
-                if code != 404:
-                    logger.warning("TDLib Error: %s (code: %s)", update.get("message", ""), code)
+                msg = update.get("message", "")
+                # Ignore 404 (exhausted list) and transient streaming buffer messages
+                transient_msgs = (
+                    "There is not enough downloaded bytes",
+                    "Failed to read the file",
+                )
+                if code != 404 and not any(t in msg for t in transient_msgs):
+                    logger.warning("TDLib Error: %s (code: %s)", msg, code)
 
     def _on_auth_state_changed(self, state: AuthState) -> None:
         self.auth_state_changed.emit(state.value)
@@ -242,13 +247,20 @@ class TelegramService(QObject):
     def download_file(self, file_id: int) -> None:
         self._media.download_audio_file(file_id)
 
+    def prefetch_audio_file(self, file_id: int) -> None:
+        self._media.prefetch_audio_file(file_id)
+
+    def prefetch_cover_file(self, track_id: str, file_id: int) -> None:
+        self._media.download_cover_file(track_id, file_id)
+
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
         self._tracks.load_chat_tracks(chat_id, reset=reset, chunk_size=chunk_size)
 
     def load_more_tracks(self, chat_id: int) -> None:
         self._tracks.load_chat_tracks(chat_id, reset=False)
 
-    def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
+    def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = ""
+    ) -> None:
         self._adapter.send({
             "@type": "addProxy",
             "proxy": {
