@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -17,10 +18,11 @@ from app.settings.service import SettingsService
 
 
 class SettingsDialog(QDialog):
-    """Settings, Proxy, and Downloads management dialog."""
+    """Settings, Proxy, Downloads, and Account Logout dialog."""
 
     cache_cleared = Signal()
     proxy_saved = Signal(str, str, int)
+    logout_requested = Signal()
 
     def __init__(
         self,
@@ -33,7 +35,7 @@ class SettingsDialog(QDialog):
         self._settings = settings_service
 
         self.setWindowTitle("تنظیمات TMusic")
-        self.resize(440, 420)
+        self.resize(440, 480)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._init_ui()
 
@@ -69,10 +71,11 @@ class SettingsDialog(QDialog):
                 border: 1px solid #2f3e50;
             }
             QPushButton#btnSecondary:hover { background-color: #2f3e50; }
-            QPushButton#btnClear {
+            QPushButton#btnLogout {
                 background-color: #e53935;
+                font-weight: bold;
             }
-            QPushButton#btnClear:hover { background-color: #d32f2f; }
+            QPushButton#btnLogout:hover { background-color: #d32f2f; }
         """)
 
         layout = QVBoxLayout(self)
@@ -119,12 +122,6 @@ class SettingsDialog(QDialog):
         storage_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #6ab3f3;")
         layout.addWidget(storage_title)
 
-        path_label = QLabel(str(self._cache.downloads_path))
-        path_label.setStyleSheet("color: #7f91a4; font-size: 11px;")
-        path_label.setWordWrap(True)
-        path_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        layout.addWidget(path_label)
-
         btn_open_folder = QPushButton("📁 باز کردن پوشه TMusicDownloads")
         btn_open_folder.setObjectName("btnSecondary")
         btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -141,11 +138,18 @@ class SettingsDialog(QDialog):
         cache_layout.addWidget(self.size_val)
         layout.addLayout(cache_layout)
 
-        btn_clear = QPushButton("🗑️ پاک‌سازی آهنگ‌های دانلود شده")
-        btn_clear.setObjectName("btnClear")
-        btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_clear.clicked.connect(self._on_clear_cache)
-        layout.addWidget(btn_clear)
+        # Separator line 2
+        sep2 = QLabel()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background-color: #242f3d;")
+        layout.addWidget(sep2)
+
+        # 3. Account Actions (Logout)
+        btn_logout = QPushButton("🚪 خروج از حساب کاربری تلگرام (Log Out)")
+        btn_logout.setObjectName("btnLogout")
+        btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_logout.clicked.connect(self._on_logout_clicked)
+        layout.addWidget(btn_logout)
 
         layout.addStretch()
 
@@ -166,7 +170,14 @@ class SettingsDialog(QDialog):
     def _on_open_downloads_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._cache.downloads_path)))
 
-    def _on_clear_cache(self) -> None:
-        self._cache.clear_cache()
-        self.size_val.setText(self._cache.get_formatted_cache_size())
-        self.cache_cleared.emit()
+    def _on_logout_clicked(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "خروج از حساب",
+            "آیا مطمئن هستید که می‌خواهید از حساب تلگرام خود خارج شوید؟",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.logout_requested.emit()
+            self.accept()

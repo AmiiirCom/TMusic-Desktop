@@ -9,7 +9,7 @@ logger = logging.getLogger("tmusic.telegram.auth")
 
 
 class AuthHandler:
-    """Manages TDLib authorization state machine and internal file storage paths."""
+    """Manages TDLib authorization state machine and credential submissions."""
 
     def __init__(
         self,
@@ -17,11 +17,13 @@ class AuthHandler:
         adapter: TDLibAdapter,
         on_auth_state_changed: Callable[[AuthState], None],
         on_auth_ready: Callable[[], None],
+        on_auth_closed: Callable[[], None],
     ) -> None:
         self._config = config
         self._adapter = adapter
         self._on_auth_state_changed = on_auth_state_changed
         self._on_auth_ready = on_auth_ready
+        self._on_auth_closed = on_auth_closed
         self._auth_state = AuthState.UNKNOWN
 
     @property
@@ -56,6 +58,8 @@ class AuthHandler:
 
             case "authorizationStateClosed":
                 self._auth_state = AuthState.CLOSED
+                logger.info("TDLib client session closed.")
+                self._on_auth_closed()
 
             case _:
                 self._auth_state = AuthState.UNKNOWN
@@ -68,7 +72,7 @@ class AuthHandler:
             "@type": "setTdlibParameters",
             "use_test_dc": False,
             "database_directory": str(self._config.tdlib_dir),
-            "files_directory": str(self._config.tdlib_files_dir),  # Private internal cache
+            "files_directory": str(self._config.tdlib_files_dir),
             "use_file_database": True,
             "use_chat_info_database": True,
             "use_message_database": True,

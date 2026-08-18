@@ -1,4 +1,6 @@
+from pathlib import Path
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -19,13 +21,83 @@ from app.ui.components.player_bar import PlayerBar
 from app.ui.components.track_list_widget import TrackListWidget
 
 
+def create_circular_avatar_pixmap(
+    photo_path: str | None,
+    minithumb_data: bytes | None,
+    initial: str,
+    size: int = 42,
+) -> QPixmap:
+    """Render a crystal-clear, anti-aliased 2x Retina circular user profile avatar."""
+    scale = 2
+    render_size = size * scale
+    pixmap = QPixmap(render_size, render_size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+    path = QPainterPath()
+    path.addEllipse(2, 2, render_size - 4, render_size - 4)
+    painter.setClipPath(path)
+
+    has_drawn = False
+
+    # 1. Downloaded HD Avatar File
+    if photo_path and Path(photo_path).exists():
+        src = QPixmap(str(photo_path))
+        if not src.isNull():
+            scaled = src.scaled(
+                render_size,
+                render_size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (scaled.width() - render_size) // 2
+            y = (scaled.height() - render_size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
+            has_drawn = True
+
+    # 2. Minithumbnail preview fallback
+    if not has_drawn and minithumb_data:
+        src = QPixmap()
+        if src.loadFromData(minithumb_data):
+            scaled = src.scaled(
+                render_size,
+                render_size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (scaled.width() - render_size) // 2
+            y = (scaled.height() - render_size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
+            has_drawn = True
+
+    # 3. Default circle with User Initial
+    if not has_drawn:
+        painter.fillRect(0, 0, render_size, render_size, QColor("#2b5278"))
+        painter.setPen(QColor("#ffffff"))
+        font = QFont("Vazirmatn", 15 * scale, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, initial)
+
+    # Draw subtle Telegram-style circular border
+    painter.setClipping(False)
+    painter.setPen(QPen(QColor("#3b5068"), 1.5 * scale))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawEllipse(2, 2, render_size - 4, render_size - 4)
+
+    painter.end()
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
 class MainView(QWidget):
-    """Telegram Desktop styled main dashboard view with lazy-loaded music library & player."""
+    """Telegram Desktop styled main dashboard view with crystal-clear avatar and perfect layout."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
-    load_more_tracks_requested = Signal(object)  # chat_id
-    logout_requested = Signal()
+    load_more_tracks_requested = Signal(object)
     settings_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -41,7 +113,7 @@ class MainView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        # 1. Sidebar Container
+        # 1. Sidebar Container (Right side in RTL)
         sidebar = QWidget(self)
         sidebar.setFixedWidth(300)
         sidebar.setStyleSheet("background-color: #17212b; border-left: 1px solid #0e1621;")
@@ -49,51 +121,69 @@ class MainView(QWidget):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        # User profile header
+        # User Profile Header (Avatar + Name + Settings Icon)
         user_header = QFrame(sidebar)
-        user_header.setFixedHeight(64)
-        user_header.setStyleSheet("background-color: #242f3d; padding: 8px 12px;")
+        user_header.setObjectName("userHeader")
+        user_header.setFixedHeight(68)
+        user_header.setStyleSheet("""
+            QFrame#userHeader {
+                background-color: #242f3d;
+                border-bottom: 1px solid #17212b;
+            }
+            QLabel#userAvatar {
+                background: transparent;
+                border: none;
+                padding: 0px;
+                margin: 0px;
+            }
+            QLabel#userName {
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: bold;
+                background: transparent;
+                border: none;
+            }
+            QPushButton#btnHeaderSettings {
+                background-color: #17212b;
+                color: #6ab3f3;
+                font-size: 14px;
+                padding: 6px 10px;
+                border-radius: 6px;
+                border: 1px solid #2f3e50;
+            }
+            QPushButton#btnHeaderSettings:hover {
+                background-color: #2b5278;
+                color: #ffffff;
+            }
+        """)
+
         user_layout = QHBoxLayout(user_header)
+        user_layout.setContentsMargins(14, 10, 14, 10)
+        user_layout.setSpacing(12)
+        user_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
+        # Avatar Label
+        self.user_avatar = QLabel()
+        self.user_avatar.setObjectName("userAvatar")
+        self.user_avatar.setFixedSize(42, 42)
+        self.user_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.user_avatar.setPixmap(create_circular_avatar_pixmap(None, None, "U", 42))
+
+        # Name Label
         self.user_name_label = QLabel("کاربر تلگرام")
-        self.user_name_label.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
+        self.user_name_label.setObjectName("userName")
+        self.user_name_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
+        # Settings Button
         btn_settings = QPushButton("⚙️")
+        btn_settings.setObjectName("btnHeaderSettings")
         btn_settings.setToolTip("تنظیمات و حافظه")
         btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_settings.setStyleSheet("""
-            QPushButton {
-                background: #2f3e50;
-                color: white;
-                font-size: 14px;
-                padding: 4px 8px;
-                border-radius: 4px;
-                border: none;
-            }
-            QPushButton:hover { background: #3b4e64; }
-        """)
         btn_settings.clicked.connect(self.settings_requested.emit)
 
-        btn_logout = QPushButton("خروج")
-        btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_logout.setStyleSheet("""
-            QPushButton {
-                background: #e53935;
-                color: white;
-                font-size: 11px;
-                font-weight: bold;
-                padding: 4px 8px;
-                border-radius: 4px;
-                border: none;
-            }
-            QPushButton:hover { background: #d32f2f; }
-        """)
-        btn_logout.clicked.connect(self.logout_requested.emit)
-
-        user_layout.addWidget(self.user_name_label)
-        user_layout.addStretch()
+        user_layout.addWidget(self.user_avatar)
+        user_layout.addWidget(self.user_name_label, stretch=1)
         user_layout.addWidget(btn_settings)
-        user_layout.addWidget(btn_logout)
         sidebar_layout.addWidget(user_header)
 
         # Section title
@@ -128,7 +218,7 @@ class MainView(QWidget):
 
         # Top Header Bar
         self.chat_header = QFrame(content_area)
-        self.chat_header.setFixedHeight(64)
+        self.chat_header.setFixedHeight(68)
         self.chat_header.setStyleSheet("background-color: #17212b; border-bottom: 1px solid #0e1621;")
         header_layout = QHBoxLayout(self.chat_header)
         header_layout.setContentsMargins(20, 0, 20, 0)
@@ -192,12 +282,20 @@ class MainView(QWidget):
 
     def set_user(self, user: TelegramUser) -> None:
         self.user_name_label.setText(user.full_name)
+        self.user_avatar.setPixmap(
+            create_circular_avatar_pixmap(user.photo_path, user.minithumb_data, user.initial_letter, 42)
+        )
 
     def set_owned_chats(self, chats: list[OwnedChat]) -> None:
         self.chat_list.set_chats(chats)
 
     def set_active_track(self, track: Track) -> None:
         self.track_list.set_active_track(track)
+
+    def update_track_cover(self, track_id: str, cover_path: str) -> None:
+        self.track_list.update_track_cover(track_id, cover_path)
+        if self.player_bar._current_track and self.player_bar._current_track.id == track_id:
+            self.player_bar.update_cover(cover_path)
 
     def set_network_stats(self, speed_str: str, total_str: str) -> None:
         self.net_stats_label.setText(f"⚡ {speed_str} | دیتای سشن: {total_str}")
@@ -229,8 +327,3 @@ class MainView(QWidget):
 
     def _on_search_text_changed(self, text: str) -> None:
         self.track_list.filter_tracks(text)
-        
-    def update_track_cover(self, track_id: str, cover_path: str) -> None:
-            self.track_list.update_track_cover(track_id, cover_path)
-            if self.player_bar._current_track and self.player_bar._current_track.id == track_id:
-                self.player_bar.update_cover(cover_path)

@@ -1,3 +1,4 @@
+import base64
 from dataclasses import asdict, dataclass, field
 import logging
 from pathlib import Path
@@ -5,6 +6,7 @@ from typing import Any
 
 from app.core.security import CryptoManager
 from app.models.chat import OwnedChat
+from app.models.user import TelegramUser
 
 logger = logging.getLogger("tmusic.settings.service")
 
@@ -28,10 +30,11 @@ class UserPreferences:
     last_chat_id: int = 0
     proxy: ProxySettings = field(default_factory=ProxySettings)
     cached_music_chats: list[dict[str, Any]] = field(default_factory=list)
+    cached_user_profile: dict[str, Any] = field(default_factory=dict)
 
 
 class SettingsService:
-    """Manages secure encrypted user settings and cached music channels."""
+    """Manages secure encrypted user settings, cached chats, and avatar profile."""
 
     def __init__(self, data_dir: Path, crypto: CryptoManager) -> None:
         self._data_dir = data_dir
@@ -69,6 +72,7 @@ class SettingsService:
                 last_chat_id=data.get("last_chat_id", 0),
                 proxy=proxy,
                 cached_music_chats=data.get("cached_music_chats", []),
+                cached_user_profile=data.get("cached_user_profile", []),
             )
             logger.info("Loaded secure encrypted preferences successfully.")
         except Exception as exc:
@@ -84,6 +88,7 @@ class SettingsService:
             "last_chat_id": self._preferences.last_chat_id,
             "proxy": asdict(self._preferences.proxy),
             "cached_music_chats": self._preferences.cached_music_chats,
+            "cached_user_profile": self._preferences.cached_user_profile,
         }
         self._crypto.save_encrypted_json(self._settings_file, payload)
 
@@ -112,6 +117,53 @@ class SettingsService:
             for c in self._preferences.cached_music_chats
             if "id" in c and "title" in c
         ]
+
+    def set_cached_user_profile(self, user: TelegramUser) -> None:
+        """Cache user profile metadata and local avatar path."""
+        minithumb_str = (
+            base64.b64encode(user.minithumb_data).decode("ascii")
+            if user.minithumb_data
+            else None
+        )
+        self._preferences.cached_user_profile = {
+            "id": user.id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "username": user.username,
+            "phone_number": user.phone_number,
+            "photo_id": user.photo_id,
+            "photo_file_id": user.photo_file_id,
+            "photo_path": user.photo_path,
+            "minithumb_data": minithumb_str,
+        }
+        self.save()
+
+    def get_cached_user_profile(self) -> TelegramUser | None:
+        """Retrieve user profile from secure local cache."""
+        data = self._preferences.cached_user_profile
+        if not data or "id" not in data:
+            return None
+
+        minithumb_raw = data.get("minithumb_data")
+        minithumb_bytes = (
+            base64.b64decode(minithumb_raw.encode("ascii"))
+            if minithumb_raw
+            else None
+        )
+        photo_path = data.get("photo_path")
+        valid_path = photo_path if (photo_path and Path(photo_path).exists()) else None
+
+        return TelegramUser(
+            id=data["id"],
+            first_name=data.get("first_name", ""),
+            last_name=data.get("last_name", ""),
+            username=data.get("username", ""),
+            phone_number=data.get("phone_number", ""),
+            photo_id=data.get("photo_id", 0),
+            photo_file_id=data.get("photo_file_id", 0),
+            photo_path=valid_path,
+            minithumb_data=minithumb_bytes,
+        )
 
     def set_proxy(self, proxy_type: str, server: str, port: int, enabled: bool = True) -> None:
         self._preferences.proxy.enabled = enabled

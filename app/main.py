@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import shutil
 import sys
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QCloseEvent
@@ -31,7 +32,6 @@ logger = logging.getLogger("tmusic.main")
 
 
 def has_saved_telegram_session(config: AppConfig) -> bool:
-    """Check if a local TDLib session database already exists on disk."""
     td_binlog = config.tdlib_dir / "td.binlog"
     return td_binlog.exists() and td_binlog.stat().st_size > 0
 
@@ -45,6 +45,8 @@ class MainWindow(QMainWindow):
         cache_service: CacheService,
         network_meter: NetworkMeter,
         settings_service: SettingsService,
+        stream_server: LocalStreamServer,
+        tdlib_adapter: TDLibAdapter,
     ) -> None:
         super().__init__()
         self._config = config
@@ -53,6 +55,8 @@ class MainWindow(QMainWindow):
         self._cache = cache_service
         self._meter = network_meter
         self._settings = settings_service
+        self._stream_server = stream_server
+        self._tdlib_adapter = tdlib_adapter
         self._is_quitting = False
 
         self.setWindowTitle(f"{config.app_name} Desktop")
@@ -66,7 +70,6 @@ class MainWindow(QMainWindow):
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
-        self._main_view.logout_requested.connect(self._telegram.log_out)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
 
         # 2. Login View
@@ -76,12 +79,9 @@ class MainWindow(QMainWindow):
         self._login_view.password_submitted.connect(self._telegram.send_password)
         self._login_view.proxy_configured.connect(self._on_proxy_configured)
 
-        # Add views to stack
         self._central_stack.addWidget(self._main_view)
         self._central_stack.addWidget(self._login_view)
 
-        # Zero-Flicker Initial View Selection:
-        # If user has an existing Telegram session, display MainView from frame 0!
         if has_saved_telegram_session(self._config):
             self._central_stack.setCurrentWidget(self._main_view)
         else:
@@ -98,7 +98,6 @@ class MainWindow(QMainWindow):
         player_bar.lyrics_clicked.connect(self._open_lyrics_dialog)
         player_bar.track_info_clicked.connect(self._open_track_info_dialog)
 
-        # Restore saved volume & speed preferences
         saved_vol = self._settings.preferences.volume
         player_bar.vol_slider.setValue(saved_vol)
         self._player.set_volume(saved_vol)
@@ -107,7 +106,6 @@ class MainWindow(QMainWindow):
         player_bar.set_playback_rate(saved_speed)
         self._player.set_playback_rate(saved_speed)
 
-        # Connect PlayerService feedback with PlayerBar & TrackList UI
         self._player.track_changed.connect(player_bar.set_track)
         self._player.track_changed.connect(self._main_view.set_active_track)
         self._player.playback_state_changed.connect(player_bar.set_playback_state)
@@ -116,17 +114,14 @@ class MainWindow(QMainWindow):
         self._player.duration_changed.connect(player_bar.set_duration)
         self._player.metadata_updated.connect(player_bar.update_metadata)
 
-        # Precision Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
-        # System Tray Integration
         self._tray = TrayService(self, self._player)
         self._tray.show_window_requested.connect(self._restore_window)
         self._tray.quit_requested.connect(self._quit_application)
 
-        # Connect Telegram Service signals
         self._telegram.auth_state_changed.connect(self._on_auth_state_changed)
         self._telegram.auth_error.connect(self._login_view.show_error)
         self._telegram.connection_state_changed.connect(self._login_view.set_connection_status)
@@ -135,10 +130,9 @@ class MainWindow(QMainWindow):
         self._telegram.tracks_loaded.connect(self._on_initial_tracks_loaded)
         self._telegram.tracks_appended.connect(self._on_tracks_appended)
 
-        # Emit cached music channels immediately
-        self._telegram.load_cached_music_chats()
+        # Emit cached state (channels + user avatar) instantly
+        self._telegram.load_cached_state()
 
-        # Apply saved proxy automatically on launch
         self._apply_saved_proxy()
 
     def _apply_saved_proxy(self) -> None:
@@ -170,7 +164,32 @@ class MainWindow(QMainWindow):
     def _open_settings_dialog(self) -> None:
         dialog = SettingsDialog(self._cache, self._settings, self)
         dialog.proxy_saved.connect(self._on_proxy_configured)
+        dialog.logout_requested.connect(self._on_perform_logout)
         dialog.exec()
+
+    def _on_perform_logout(self) -> None:
+        logger.info("Performing factory reset logout: purging data directory...")
+        self._is_quitting = True
+
+        if self._player.is_playing:
+            self._player.toggle_play_pause()
+
+        try:
+            self._telegram.log_out()
+            self._telegram.stop()
+            self._stream_server.stop()
+            self._tdlib_adapter.close()
+        except Exception as exc:
+            logger.debug("Service shutdown error during logout: %s", exc)
+
+        if self._config.data_dir.exists():
+            try:
+                shutil.rmtree(self._config.data_dir, ignore_errors=True)
+                logger.info("✅ Wiped all data directory contents successfully.")
+            except Exception as exc:
+                logger.warning("Could not wipe data directory: %s", exc)
+
+        QApplication.quit()
 
     def _open_lyrics_dialog(self) -> None:
         track = self._player.current_track
@@ -233,7 +252,7 @@ class MainWindow(QMainWindow):
     def _on_auth_state_changed(self, state: str) -> None:
         logger.info("Main window reacting to auth state: %s", state)
         match state:
-            case AuthState.WAIT_PHONE_NUMBER:
+            case AuthState.WAIT_PHONE_NUMBER | AuthState.CLOSED | AuthState.LOGGING_OUT:
                 self._central_stack.setCurrentWidget(self._login_view)
                 self._login_view.show_phone_step()
 
@@ -275,6 +294,8 @@ def main() -> int:
         cache_service,
         network_meter,
         settings_service,
+        stream_server,
+        tdlib_adapter,
     )
     window.show()
 
@@ -282,7 +303,6 @@ def main() -> int:
 
     exit_code = app.exec()
 
-    # Clean shutdown
     stream_server.stop()
     telegram_service.stop()
     tdlib_adapter.close()

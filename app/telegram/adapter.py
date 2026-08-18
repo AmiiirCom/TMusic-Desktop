@@ -97,6 +97,23 @@ class TDLibAdapter:
     def is_loaded(self) -> bool:
         return self._client is not None
 
+    def recreate_client(self) -> None:
+        """Destroy closed TDLib client and instantiate a fresh client instance."""
+        if self._client and self._tdlib:
+            try:
+                self._tdlib.td_json_client_destroy(self._client)
+            except Exception as exc:
+                logger.debug("Error destroying closed TDLib client: %s", exc)
+            self._client = None
+
+        with self._requests_lock:
+            self._pending_requests.clear()
+
+        if self._tdlib:
+            self._client = self._tdlib.td_json_client_create()
+            self.execute({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1})
+            logger.info("TDLib fresh client instance created successfully")
+
     def send(self, query: dict[str, Any]) -> None:
         if not self._client or not self._tdlib:
             raise TDLibError("TDLib client is not initialized")
@@ -105,7 +122,6 @@ class TDLibAdapter:
         self._tdlib.td_json_client_send(self._client, query_bytes)
 
     def request_sync(self, query: dict[str, Any], timeout: float = 3.0) -> dict[str, Any] | None:
-        """Send query with @extra and wait synchronously for response in a thread-safe way."""
         extra_id = f"req_{uuid.uuid4().hex}"
         query["@extra"] = extra_id
 
@@ -135,7 +151,6 @@ class TDLibAdapter:
         try:
             update = json.loads(result_ptr.decode("utf-8"))
 
-            # Check if this update matches a pending synchronous request
             extra = update.get("@extra")
             if extra and isinstance(extra, str):
                 with self._requests_lock:

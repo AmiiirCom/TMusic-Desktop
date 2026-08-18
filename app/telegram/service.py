@@ -1,8 +1,13 @@
+import base64
+from dataclasses import dataclass, field
 import logging
+from pathlib import Path
 from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.config import AppConfig
+from app.core.keywords import is_music_title
+from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
 from app.settings.service import SettingsService
@@ -17,8 +22,17 @@ from app.telegram.worker import TDLibWorker
 logger = logging.getLogger("tmusic.telegram.service")
 
 
+@dataclass(slots=True)
+class ChatTrackPaginationState:
+    chat_id: int
+    tracks: list[Track] = field(default_factory=list)
+    next_from_message_id: int = 0
+    is_loading: bool = False
+    has_more: bool = True
+
+
 class TelegramService(QObject):
-    """Clean Facade coordinating Telegram handlers, media registry, and Qt signals."""
+    """Clean Facade coordinating Telegram handlers, HD avatar, and Qt signals."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -50,13 +64,15 @@ class TelegramService(QObject):
 
         self._my_user_id: int = 0
         self._current_user: TelegramUser | None = None
+        self._avatar_file_id: int = 0
 
-        # 1. Initialize Sub-Handlers
+        # 1. Initialize Handlers
         self._auth = AuthHandler(
             config=self._config,
             adapter=self._adapter,
             on_auth_state_changed=self._on_auth_state_changed,
             on_auth_ready=self._on_auth_ready,
+            on_auth_closed=self._on_auth_closed,
         )
 
         self._media = MediaHandler(
@@ -80,7 +96,7 @@ class TelegramService(QObject):
             on_lazy_chunk_appended=self.tracks_appended.emit,
         )
 
-        # 2. Network Statistics Poller Timer
+        # 2. Network Stats Timer
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
@@ -97,8 +113,15 @@ class TelegramService(QObject):
         self._settings = settings_service
         self._chats.set_settings_service(settings_service)
 
-    def load_cached_music_chats(self) -> None:
+    def load_cached_state(self) -> None:
         self._chats.load_cached_chats()
+        if self._settings:
+            cached_user = self._settings.get_cached_user_profile()
+            if cached_user:
+                self._current_user = cached_user
+                self._my_user_id = cached_user.id
+                logger.info("Loaded user profile from cache: %s ⚡", cached_user.full_name)
+                self.user_loaded.emit(cached_user)
 
     def get_downloaded_path(self, file_id: int) -> str | None:
         return self._media.get_downloaded_path(file_id)
@@ -116,7 +139,7 @@ class TelegramService(QObject):
         self._worker.update_received.connect(self._handle_update)
         self._worker.start()
         self._net_timer.start()
-        logger.info("TelegramService Facade started")
+        logger.info("TelegramService started")
 
     def _poll_network_statistics(self) -> None:
         if self._adapter.is_loaded:
@@ -170,14 +193,35 @@ class TelegramService(QObject):
                 self.connection_state_changed.emit(state)
 
             case "updateFile":
-                self._media.process_file_update(update.get("file", {}))
+                file_obj = update.get("file", {})
+                file_id = file_obj.get("id", 0)
+                local = file_obj.get("local", {})
+                if local.get("is_downloading_completed") and local.get("path"):
+                    if file_id == self._avatar_file_id and self._current_user:
+                        self._current_user = TelegramUser(
+                            id=self._current_user.id,
+                            first_name=self._current_user.first_name,
+                            last_name=self._current_user.last_name,
+                            username=self._current_user.username,
+                            phone_number=self._current_user.phone_number,
+                            photo_id=self._current_user.photo_id,
+                            photo_file_id=self._avatar_file_id,
+                            photo_path=local.get("path"),
+                            minithumb_data=self._current_user.minithumb_data,
+                        )
+                        if self._settings:
+                            self._settings.set_cached_user_profile(self._current_user)
+                        self.user_loaded.emit(self._current_user)
+
+                self._media.process_file_update(file_obj)
 
             case "user":
                 self._extract_user(update, is_self=True)
 
             case "updateUser":
                 user_obj = update.get("user", {})
-                if self._my_user_id == 0 or user_obj.get("id") == self._my_user_id:
+                user_id = user_obj.get("id", 0)
+                if self._my_user_id == 0 or user_id == self._my_user_id:
                     self._extract_user(user_obj, is_self=True)
 
             case "chats":
@@ -212,14 +256,76 @@ class TelegramService(QObject):
     def _on_auth_ready(self) -> None:
         self._chats.start_chat_sync()
 
+    def _on_auth_closed(self) -> None:
+        logger.info("TDLib closed. Recreating fresh TDLib client instance...")
+        self._net_timer.stop()
+        if self._worker:
+            self._worker.stop()
+
+        self._my_user_id = 0
+        self._current_user = None
+        self._avatar_file_id = 0
+
+        self._adapter.recreate_client()
+        self._worker = TDLibWorker(self._adapter)
+        self._worker.update_received.connect(self._handle_update)
+        self._worker.start()
+
     def _extract_user(self, user_obj: dict[str, Any], is_self: bool = False) -> None:
         user_id = user_obj.get("id", 0)
         if not user_id:
             return
 
+        if not is_self and self._my_user_id != 0 and user_id != self._my_user_id:
+            return
+
+        self._my_user_id = user_id
+
         usernames = user_obj.get("usernames", {})
         active_usernames = usernames.get("active_usernames", [])
         username = active_usernames[0] if active_usernames else user_obj.get("username", "")
+
+        photo = user_obj.get("profile_photo", {})
+        photo_id = photo.get("id", 0)
+
+        big_file = photo.get("big", {}) if photo else {}
+        small_file = photo.get("small", {}) if photo else {}
+        target_photo_file = big_file if big_file.get("id") else small_file
+
+        photo_file_id = target_photo_file.get("id", 0)
+        photo_local = target_photo_file.get("local", {}) if target_photo_file else {}
+        photo_path = photo_local.get("path") if photo_local.get("is_downloading_completed") else None
+
+        minithumb = photo.get("minithumbnail") if photo else None
+        minithumb_data = None
+        if minithumb and "data" in minithumb:
+            try:
+                minithumb_data = base64.b64decode(minithumb["data"])
+            except Exception:
+                minithumb_data = None
+
+        cached_user = self._settings.get_cached_user_profile() if self._settings else None
+        is_same_photo = (
+            cached_user
+            and str(cached_user.photo_id) == str(photo_id)
+            and cached_user.photo_path
+            and Path(cached_user.photo_path).exists()
+        )
+
+        if is_same_photo and cached_user:
+            photo_path = cached_user.photo_path
+            logger.info("Using cached profile photo (Photo ID: %s, 0 bytes consumed) ✅", photo_id)
+        elif photo_file_id > 0 and not photo_path:
+            logger.info("Downloading new/updated profile photo (Photo ID: %s)...", photo_id)
+            self._avatar_file_id = photo_file_id
+            self._adapter.send({
+                "@type": "downloadFile",
+                "file_id": photo_file_id,
+                "priority": 16,
+                "offset": 0,
+                "limit": 0,
+                "synchronous": False,
+            })
 
         user = TelegramUser(
             id=user_id,
@@ -227,15 +333,20 @@ class TelegramService(QObject):
             last_name=user_obj.get("last_name", ""),
             username=username,
             phone_number=user_obj.get("phone_number", ""),
+            photo_id=photo_id,
+            photo_file_id=photo_file_id,
+            photo_path=photo_path,
+            minithumb_data=minithumb_data,
         )
 
-        if is_self or self._my_user_id == user_id:
-            self._my_user_id = user_id
-            self._current_user = user
-            logger.info("Current user profile: %s (ID: %d)", user.full_name, user.id)
-            self.user_loaded.emit(user)
+        self._current_user = user
+        if self._settings:
+            self._settings.set_cached_user_profile(user)
 
-    # --- Public Methods Delegated to Handlers ---
+        logger.info("Authenticated user profile: %s (ID: %d)", user.full_name, user.id)
+        self.user_loaded.emit(user)
+
+    # --- Public Methods ---
 
     def send_phone_number(self, phone_number: str) -> None:
         self._auth.send_phone_number(phone_number)
@@ -288,7 +399,7 @@ class TelegramService(QObject):
         })
 
     def log_out(self) -> None:
-        self._net_timer.stop()
+        logger.info("Submitting logOut request to TDLib...")
         self._adapter.send({"@type": "logOut"})
 
     def stop(self) -> None:
