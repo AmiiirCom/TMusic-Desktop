@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.image_compressor import compress_image, get_compressed_image_path
 from app.telegram.adapter import TDLibAdapter
 
 logger = logging.getLogger("tmusic.telegram.media")
@@ -13,11 +14,13 @@ class MediaHandler:
     def __init__(
         self,
         adapter: TDLibAdapter,
+        config: Any,  # AppConfig
         on_audio_progress: Callable[[int, int, int], None],
         on_audio_completed: Callable[[int, str], None],
         on_cover_completed: Callable[[str, str], None],
     ) -> None:
         self._adapter = adapter
+        self._config = config
         self._on_audio_progress = on_audio_progress
         self._on_audio_completed = on_audio_completed
         self._on_cover_completed = on_cover_completed
@@ -63,7 +66,7 @@ class MediaHandler:
             return
 
         self._downloading_audio_files.add(file_id)
-        logger.info("⚡ Smart Pre-fetching track file ID: %d", file_id)
+        logger.info("Smart Pre-fetching track file ID: %d", file_id)
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
@@ -106,9 +109,28 @@ class MediaHandler:
             # Check if this file is a cover image (registered in cover map)
             track_id = self._cover_file_to_track_id.pop(file_id, None)
             if track_id:
-                # Cover image completion: emit cover signal only, do NOT trigger audio export
+                # Compress the cover image before emitting
+                orig_path = Path(path)
+                if orig_path.exists():
+                    from app.core.image_compressor import get_compressed_image_path
+                    compressed_path = get_compressed_image_path(
+                        self._config.thumb_cache_dir,
+                        "cover",
+                        track_id.replace("_", "-")
+                    )
+                    result = compress_image(orig_path, compressed_path)
+                    if result:
+                        logger.debug("Cover compressed: %s -> %s", orig_path.name, result.name)
+                        self._on_cover_completed(track_id, str(result))
+                        # Delete original file
+                        try:
+                            orig_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        return
+                # If compression fails, fallback to original
                 self._on_cover_completed(track_id, path)
-                return  # Stop further processing for this file
+                return
 
             # Otherwise, treat as audio file -> trigger export to TMusicDownloads
             self._downloading_audio_files.discard(file_id)

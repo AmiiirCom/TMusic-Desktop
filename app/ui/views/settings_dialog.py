@@ -38,7 +38,6 @@ class SettingsDialog(BaseModalDialog):
         self._init_body()
 
     def _init_body(self) -> None:
-        # 1. Proxy Section
         proxy_title = QLabel("🛡️ تنظیمات پروکسی تلگرام (رمزنگاری‌شده)")
         proxy_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(proxy_title)
@@ -68,13 +67,11 @@ class SettingsDialog(BaseModalDialog):
         btn_save_proxy.clicked.connect(self._on_save_proxy)
         self.body_layout.addWidget(btn_save_proxy)
 
-        # Separator line 1
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.HLine)
         sep1.setStyleSheet("color: #242f3d; margin: 4px 0;")
         self.body_layout.addWidget(sep1)
 
-        # 2. Storage & Downloads Section
         storage_title = QLabel("📂 محل ذخیره آهنگ‌ها (Downloads)")
         storage_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(storage_title)
@@ -92,11 +89,9 @@ class SettingsDialog(BaseModalDialog):
         btn_open_folder.clicked.connect(self._on_open_downloads_folder)
         self.body_layout.addWidget(btn_open_folder)
 
-        # Storage info row: Cache size + Downloads size + Clear button
         storage_actions_row = QHBoxLayout()
         storage_actions_row.setSpacing(10)
 
-        # Cache size
         cache_info_layout = QVBoxLayout()
         cache_label = QLabel("حجم کش:")
         cache_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
@@ -105,7 +100,6 @@ class SettingsDialog(BaseModalDialog):
         cache_info_layout.addWidget(cache_label)
         cache_info_layout.addWidget(self.cache_size_val)
 
-        # Downloads size
         downloads_info_layout = QVBoxLayout()
         downloads_label = QLabel("حجم دانلودها:")
         downloads_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
@@ -125,13 +119,11 @@ class SettingsDialog(BaseModalDialog):
         storage_actions_row.addWidget(btn_clear)
         self.body_layout.addLayout(storage_actions_row)
 
-        # Separator line 2
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet("color: #242f3d; margin: 4px 0;")
         self.body_layout.addWidget(sep2)
 
-        # 3. Logout Section
         btn_logout = QPushButton("🚪 خروج از حساب کاربری تلگرام (Log Out)")
         btn_logout.setStyleSheet("background-color: #e53935; font-weight: bold; padding: 10px;")
         btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)

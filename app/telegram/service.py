@@ -79,6 +79,7 @@ class TelegramService(QObject):
 
         self._media = MediaHandler(
             adapter=self._adapter,
+            config=self._config,  # <-- pass config
             on_audio_progress=self.file_download_progress.emit,
             on_audio_completed=self.file_download_completed.emit,
             on_cover_completed=self.cover_downloaded.emit,
@@ -246,22 +247,37 @@ class TelegramService(QObject):
                 local = file_obj.get("local", {})
                 if local.get("is_downloading_completed") and local.get("path"):
                     if file_id == self._avatar_file_id and self._current_user:
-                        self._current_user = TelegramUser(
-                            id=self._current_user.id,
-                            first_name=self._current_user.first_name,
-                            last_name=self._current_user.last_name,
-                            username=self._current_user.username,
-                            phone_number=self._current_user.phone_number,
-                            photo_id=self._current_user.photo_id,
-                            photo_file_id=self._avatar_file_id,
-                            photo_path=local.get("path"),
-                            minithumb_data=self._current_user.minithumb_data,
-                        )
-                        if self._settings:
-                            self._settings.set_cached_user_profile(self._current_user)
-                        self.user_loaded.emit(self._current_user)
+                        original_path = Path(local.get("path"))
+                        if original_path.exists():
+                            from app.core.image_compressor import compress_image, get_compressed_image_path
+                            compressed_path = get_compressed_image_path(
+                                self._config.thumb_cache_dir,
+                                "avatar",
+                                str(self._current_user.id)
+                            )
+                            result = compress_image(original_path, compressed_path)
+                            if result:
+                                self._current_user = TelegramUser(
+                                    id=self._current_user.id,
+                                    first_name=self._current_user.first_name,
+                                    last_name=self._current_user.last_name,
+                                    username=self._current_user.username,
+                                    phone_number=self._current_user.phone_number,
+                                    photo_id=self._current_user.photo_id,
+                                    photo_file_id=self._avatar_file_id,
+                                    photo_path=str(result),
+                                    minithumb_data=self._current_user.minithumb_data,
+                                )
+                                if self._settings:
+                                    self._settings.set_cached_user_profile(self._current_user)
+                                self.user_loaded.emit(self._current_user)
+                                # Delete original
+                                try:
+                                    original_path.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
 
-                self._media.process_file_update(file_obj)
+                    self._media.process_file_update(file_obj)
 
             case "user":
                 self._extract_user(update, is_self=True)

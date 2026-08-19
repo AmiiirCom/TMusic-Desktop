@@ -53,21 +53,17 @@ class AppConfig:
     organization_name: str = "TMusicOrg"
     organization_domain: str = "tmusic.local"
 
-    # Base paths
     root_dir: Path = _ROOT_DIR
     bundle_dir: Path = _BUNDLE_DIR
     resources_dir: Path = _BUNDLE_DIR / "resources"
     translations_dir: Path = _BUNDLE_DIR / "resources" / "translations"
     data_dir: Path = _ROOT_DIR / "data"
     tdlib_dir: Path = _ROOT_DIR / "data" / "tdlib"
-
-    # Internal cache for TDLib temp/subfolder files (kept private from user)
     tdlib_files_dir: Path = _ROOT_DIR / "data" / "cache"
+    thumb_cache_dir: Path = _ROOT_DIR / "data" / "thumb_cache"
 
-    # Clean User-facing Downloads Folder (Contains ONLY completed audio tracks)
     downloads_dir: Path = field(default_factory=get_default_downloads_dir)
 
-    # Loaded Telegram API credentials
     api_id: int = field(default_factory=_get_api_id)
     api_hash: str = field(default_factory=_get_api_hash)
 
@@ -75,6 +71,7 @@ class AppConfig:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.tdlib_dir.mkdir(parents=True, exist_ok=True)
         self.tdlib_files_dir.mkdir(parents=True, exist_ok=True)
+        self.thumb_cache_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.downloads_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
