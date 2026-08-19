@@ -10,6 +10,7 @@ from PySide6.QtMultimedia import QMediaMetaData, QMediaPlayer
 
 logger = logging.getLogger("tmusic.core.metadata")
 
+# Strict Regex pattern for lyric, lyrics, lyric-*, lyrics-*, unsyncedlyrics, text
 LYRICS_KEY_REGEX = re.compile(
     r"^(lyrics?(-[a-zA-Z0-9_]+)?|unsynced[_\s]?lyrics?|text)$",
     re.IGNORECASE,
@@ -42,7 +43,6 @@ def _clean_lyrics_text(raw_text: str) -> str:
     if not raw_text:
         return ""
 
-    # Remove BOM and null artifacts
     clean = (
         raw_text.replace("\ufeff", "")
         .replace("\ufffe", "")
@@ -50,7 +50,6 @@ def _clean_lyrics_text(raw_text: str) -> str:
         .strip()
     )
 
-    # If the text starts with a known descriptor, strip the descriptor prefix
     descriptor_prefixes = (
         "async lyric song",
         "sync lyric song",
@@ -100,30 +99,25 @@ def _parse_uslt_frame(frame_body: bytes) -> str:
         return ""
 
     encoding = frame_body[0]
-    payload = frame_body[4:]  # Skip 3-byte language code (e.g. "XXX", "eng")
+    payload = frame_body[4:]
 
     try:
-        # 1. Decode using declared encoding
-        if encoding == 1:  # UTF-16 with BOM
+        if encoding == 1:
             decoded_str = payload.decode("utf-16", errors="ignore")
-        elif encoding == 2:  # UTF-16BE
+        elif encoding == 2:
             decoded_str = payload.decode("utf-16-be", errors="ignore")
-        elif encoding == 3:  # UTF-8
+        elif encoding == 3:
             decoded_str = payload.decode("utf-8", errors="ignore")
-        else:  # Latin1 (0)
-            # Try UTF-8 first in case encoder mislabeled encoding
+        else:
             try:
                 decoded_str = payload.decode("utf-8")
             except UnicodeDecodeError:
                 decoded_str = payload.decode("latin1", errors="ignore")
 
-        # 2. Extract lyrics: Look for delimiter splitting descriptor from body
         if "\x00" in decoded_str:
             parts = decoded_str.split("\x00")
-            # Pick the longest part with line breaks as the actual song lyrics
             candidates = [p.strip() for p in parts if p.strip()]
             if candidates:
-                # Prefer multi-line candidate
                 multiline = [c for c in candidates if "\n" in c or len(c) > 40]
                 lyrics_raw = multiline[0] if multiline else candidates[-1]
             else:
@@ -276,7 +270,6 @@ def parse_id3v2_tags_from_bytes(data: bytes) -> AudioMetadata:
     except Exception as exc:
         logger.debug("ID3 structured parser exception: %s", exc)
 
-    # 3. Direct signature scanner fallback
     if not meta.has_lyrics:
         raw_lyrics = _scan_raw_uslt_fallback(data)
         if raw_lyrics:
@@ -296,7 +289,6 @@ def extract_metadata_from_player(
     """
     metadata = AudioMetadata()
 
-    # 1. Parse from direct disk file OR in-memory streaming header bytes (Up to 4 MB)
     bytes_to_parse: bytes | None = None
     if local_file_path and Path(local_file_path).exists():
         try:
@@ -310,7 +302,6 @@ def extract_metadata_from_player(
     if bytes_to_parse:
         metadata = parse_id3v2_tags_from_bytes(bytes_to_parse)
 
-    # 2. Extract and enhance with FFmpeg QMediaMetaData
     meta = player.metaData()
     if not meta.isEmpty():
         if not metadata.title:
@@ -331,7 +322,6 @@ def extract_metadata_from_player(
         if not metadata.publisher:
             metadata.publisher = meta.stringValue(QMediaMetaData.Key.Publisher) or ""
 
-        # Release Date
         if not metadata.release_date:
             date_val = meta.value(QMediaMetaData.Key.Date)
             if isinstance(date_val, (QDate, QDateTime)):
@@ -339,12 +329,10 @@ def extract_metadata_from_player(
             elif isinstance(date_val, (str, int)) and str(date_val).strip():
                 metadata.release_date = str(date_val).strip()
 
-        # Bitrate
         bitrate = meta.value(QMediaMetaData.Key.AudioBitRate)
         if isinstance(bitrate, (int, float)) and bitrate > 0:
             metadata.bitrate_kbps = int(bitrate) // 1000
 
-        # Scan any available QMediaMetaData string keys strictly matching Regex
         if not metadata.has_lyrics:
             for key in meta.keys():
                 key_name = str(key).strip().lower()
