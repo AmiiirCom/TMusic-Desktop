@@ -67,12 +67,14 @@ class MainWindow(QMainWindow):
         self._central_stack = QStackedWidget(self)
         self.setCentralWidget(self._central_stack)
 
+        # Main Dashboard View
         self._main_view = MainView(self)
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
 
+        # Login View
         self._login_view = LoginView(self)
         self._login_view.phone_submitted.connect(self._telegram.send_phone_number)
         self._login_view.code_submitted.connect(self._telegram.send_code)
@@ -87,6 +89,7 @@ class MainWindow(QMainWindow):
         else:
             self._central_stack.setCurrentWidget(self._login_view)
 
+        # Connect PlayerBar UI controls with PlayerService
         player_bar = self._main_view.player_bar
         player_bar.play_pause_clicked.connect(self._player.toggle_play_pause)
         player_bar.next_clicked.connect(self._player.play_next)
@@ -98,6 +101,7 @@ class MainWindow(QMainWindow):
         player_bar.track_info_clicked.connect(self._open_track_info_dialog)
         player_bar.track_label_clicked.connect(self._on_track_label_clicked)
 
+        # Restore saved settings
         saved_vol = self._settings.preferences.volume
         player_bar.vol_slider.setValue(saved_vol)
         self._player.set_volume(saved_vol)
@@ -106,6 +110,7 @@ class MainWindow(QMainWindow):
         player_bar.set_playback_rate(saved_speed)
         self._player.set_playback_rate(saved_speed)
 
+        # Player signals
         self._player.track_changed.connect(player_bar.set_track)
         self._player.track_changed.connect(self._main_view.set_active_track)
         self._player.playback_state_changed.connect(player_bar.set_playback_state)
@@ -115,14 +120,17 @@ class MainWindow(QMainWindow):
         self._player.duration_changed.connect(player_bar.set_duration)
         self._player.metadata_updated.connect(player_bar.update_metadata)
 
+        # Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
+        # System Tray
         self._tray = TrayService(self, self._player)
         self._tray.show_window_requested.connect(self._restore_window)
         self._tray.quit_requested.connect(self._quit_application)
 
+        # Telegram signals
         self._telegram.auth_state_changed.connect(self._on_auth_state_changed)
         self._telegram.auth_error.connect(self._login_view.show_error)
         self._telegram.connection_state_changed.connect(self._login_view.set_connection_status)
@@ -193,33 +201,32 @@ class MainWindow(QMainWindow):
             dialog.exec()
 
     def _on_perform_logout(self) -> None:
-        logger.info("Performing factory reset logout: purging data directory...")
+        """Complete factory reset: wipe all session data and exit immediately."""
+        logger.info("Performing factory reset logout: wiping all data and cache...")
         self._is_quitting = True
 
+        # Stop playback
         if self._player.is_playing:
             self._player.toggle_play_pause()
 
+        # Shut down background services to release file locks
         try:
-            self._telegram.log_out()
-            self._telegram.stop()
-            self._stream_server.stop()
-            self._tdlib_adapter.close()
+            self._telegram.stop()          # Stops TDLib worker thread
+            self._stream_server.stop()     # Stops HTTP streaming server
+            self._tdlib_adapter.close()    # Closes the native TDLib client
         except Exception as exc:
-            logger.debug("Service shutdown error during logout: %s", exc)
+            logger.warning("Error during service shutdown: %s", exc)
 
-        try:
-            self._cache.clear_all()
-        except Exception as exc:
-            logger.debug("Cache clear error: %s", exc)
-
-        for dir_path in (self._config.app_data_dir, self._config.cache_dir):
+        # Delete entire organization directories (AppData/Roaming/TMusicOrg and AppData/Local/TMusicOrg)
+        for dir_path in (self._config.org_data_root, self._config.org_cache_root):
             if dir_path.exists():
                 try:
                     shutil.rmtree(dir_path, ignore_errors=True)
-                    logger.info("✅ Wiped %s", dir_path)
+                    logger.info("✅ Removed %s", dir_path)
                 except Exception as exc:
-                    logger.warning("Could not wipe %s: %s", dir_path, exc)
+                    logger.warning("Could not remove %s: %s", dir_path, exc)
 
+        # Exit the application
         QApplication.quit()
 
     @Slot(int)
@@ -274,17 +281,25 @@ class MainWindow(QMainWindow):
     def _on_auth_state_changed(self, state: str) -> None:
         logger.info("Main window reacting to auth state: %s", state)
         match state:
-            case AuthState.WAIT_PHONE_NUMBER | AuthState.CLOSED | AuthState.LOGGING_OUT:
+            case AuthState.WAIT_PHONE_NUMBER | AuthState.LOGGING_OUT:
                 self._central_stack.setCurrentWidget(self._login_view)
                 self._login_view.show_phone_step()
+
             case AuthState.WAIT_CODE:
                 self._central_stack.setCurrentWidget(self._login_view)
                 self._login_view.show_code_step()
+
             case AuthState.WAIT_PASSWORD:
                 self._central_stack.setCurrentWidget(self._login_view)
                 self._login_view.show_password_step()
+
             case AuthState.READY:
                 self._central_stack.setCurrentWidget(self._main_view)
+
+            case AuthState.CLOSED:
+                # Session terminated remotely -> perform full logout (wipe data and exit)
+                logger.info("Session terminated remotely. Performing full logout...")
+                self._on_perform_logout()
 
     @Slot()
     def _on_track_label_clicked(self) -> None:

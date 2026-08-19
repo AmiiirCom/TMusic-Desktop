@@ -72,6 +72,17 @@ class AppConfig:
         path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
         return Path(path) / "TMusicData"
 
+    # Root organization directories (for full wipe)
+    @property
+    def org_data_root(self) -> Path:
+        """Root directory for application data (e.g. .../AppData/Roaming/TMusicOrg)"""
+        return self.app_data_dir.parent.parent
+
+    @property
+    def org_cache_root(self) -> Path:
+        """Root directory for cache data (e.g. .../AppData/Local/TMusicOrg)"""
+        return self.cache_dir.parent.parent
+
     @property
     def tdlib_dir(self) -> Path:
         return self.app_data_dir / "tdlib"

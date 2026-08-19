@@ -55,7 +55,7 @@ class TelegramService(QObject):
         config: AppConfig,
         adapter: TDLibAdapter,
         settings_service: SettingsService | None = None,
-        cache_manager: Any = None,  # CacheManager
+        cache_manager: Any = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -272,7 +272,6 @@ class TelegramService(QObject):
                                 if self._settings:
                                     self._settings.set_cached_user_profile(self._current_user)
                                 self.user_loaded.emit(self._current_user)
-                                # Delete original
                                 try:
                                     original_path.unlink(missing_ok=True)
                                 except Exception:
@@ -323,19 +322,21 @@ class TelegramService(QObject):
         self._chats.start_chat_sync()
 
     def _on_auth_closed(self) -> None:
-        logger.info("TDLib closed. Recreating fresh TDLib client instance...")
+        """Handle TDLib authorization closed state without auto-recreate."""
+        logger.info("TDLib authorization closed (session terminated remotely).")
         self._net_timer.stop()
         if self._worker:
             self._worker.stop()
+            self._worker = None
 
-        self._my_user_id = 0
-        self._current_user = None
-        self._avatar_file_id = 0
+        # Close the adapter to release resources, but do NOT recreate it.
+        try:
+            self._adapter.close()
+        except Exception as exc:
+            logger.debug("Error closing adapter: %s", exc)
 
-        self._adapter.recreate_client()
-        self._worker = TDLibWorker(self._adapter)
-        self._worker.update_received.connect(self._handle_update)
-        self._worker.start()
+        # Emit state change so MainWindow can react
+        self.auth_state_changed.emit(AuthState.CLOSED.value)
 
     def _extract_user(self, user_obj: dict[str, Any], is_self: bool = False) -> None:
         user_id = user_obj.get("id", 0)
@@ -435,6 +436,7 @@ class TelegramService(QObject):
         self._tracks.load_chat_tracks(chat_id, reset=reset, chunk_size=chunk_size)
 
     def load_more_tracks(self, chat_id: int) -> None:
+        """Load the next chunk of tracks for the given chat."""
         self._tracks.load_chat_tracks(chat_id, reset=False)
 
     def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
@@ -471,3 +473,4 @@ class TelegramService(QObject):
         self._net_timer.stop()
         if self._worker:
             self._worker.stop()
+            self._worker = None
