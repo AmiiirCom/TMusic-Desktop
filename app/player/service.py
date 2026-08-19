@@ -421,6 +421,7 @@ class PlayerService(QObject):
         self.playback_state_changed.emit(False)
 
     @Slot(int, str)
+    @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
         """
         Instant Export & Seamless Switch:
@@ -430,6 +431,11 @@ class PlayerService(QObject):
         """
         internal_path = Path(internal_path_str)
         if not internal_path.exists() or internal_path.stat().st_size == 0:
+            return
+
+        # Safety check: skip image files (should not happen after MediaHandler fix)
+        if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+            logger.debug("Skipping image file export: %s", internal_path.name)
             return
 
         matching_track = self._known_tracks.get(file_id)

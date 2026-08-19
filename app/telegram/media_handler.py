@@ -103,15 +103,17 @@ class MediaHandler:
         if is_completed and path:
             self._file_id_to_path[file_id] = path
 
-            # 1. HD cover art check
+            # Check if this file is a cover image (registered in cover map)
             track_id = self._cover_file_to_track_id.pop(file_id, None)
             if track_id:
+                # Cover image completion: emit cover signal only, do NOT trigger audio export
                 self._on_cover_completed(track_id, path)
-            else:
-                # 2. Audio track completion -> ALWAYS notify for immediate TMusicDownloads export!
-                self._downloading_audio_files.discard(file_id)
-                logger.info("Audio file ID %d 100%% complete in TDLib -> Triggering immediate export: %s", file_id, path)
-                self._on_audio_completed(file_id, path)
+                return  # Stop further processing for this file
+
+            # Otherwise, treat as audio file -> trigger export to TMusicDownloads
+            self._downloading_audio_files.discard(file_id)
+            logger.info("Audio file ID %d 100%% complete in TDLib -> Triggering immediate export: %s", file_id, path)
+            self._on_audio_completed(file_id, path)
 
         elif local.get("is_downloading_active", False):
             self._on_audio_progress(file_id, downloaded, total)
