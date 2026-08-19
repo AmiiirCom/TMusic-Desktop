@@ -1,4 +1,3 @@
-from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFormLayout,
@@ -24,6 +23,7 @@ class TrackInfoDialog(BaseModalDialog):
         self._init_body(track, metadata or AudioMetadata())
 
     def _init_body(self, track: Track, meta: AudioMetadata) -> None:
+        # Top: Artwork + Title
         top_layout = QHBoxLayout()
         top_layout.setSpacing(16)
 
@@ -82,8 +82,5 @@ class TrackInfoDialog(BaseModalDialog):
 
         if track.formatted_date:
             add_row("تاریخ ارسال در تلگرام:", track.formatted_date)
-
-        if track.local_path:
-            add_row("نام فایل در سیستم:", Path(track.local_path).name)
 
         self.body_layout.addLayout(form)
