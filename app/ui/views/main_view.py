@@ -42,7 +42,6 @@ def create_circular_avatar_pixmap(
 
     has_drawn = False
 
-    # 1. Authentic Downloaded Photo
     if photo_path and Path(photo_path).exists():
         src = QPixmap(str(photo_path))
         if not src.isNull():
@@ -57,7 +56,6 @@ def create_circular_avatar_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
-    # 2. Minithumbnail preview fallback
     if not has_drawn and minithumb_data:
         src = QPixmap()
         if src.loadFromData(minithumb_data):
@@ -72,7 +70,6 @@ def create_circular_avatar_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
-    # 3. Default circle with User Initial
     if not has_drawn:
         painter.fillRect(0, 0, render_size, render_size, QColor("#2b5278"))
         painter.setPen(QColor("#ffffff"))
@@ -294,6 +291,10 @@ class MainView(QWidget):
 
     def set_network_stats(self, speed_str: str, total_str: str) -> None:
         self.net_stats_label.setText(f"⚡ {speed_str} | دیتای سشن: {total_str}")
+
+    def scroll_to_track(self, track: Track) -> None:
+        """Scroll the track list to bring the given track into view."""
+        self.track_list.scroll_to_track(track.id)
 
     def _on_internal_chat_selected(self, chat: OwnedChat) -> None:
         self._active_chat = chat

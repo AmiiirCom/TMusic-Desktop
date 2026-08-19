@@ -1,5 +1,5 @@
 from pathlib import Path
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -84,6 +84,7 @@ class PlayerBar(QFrame):
     speed_changed = Signal(float)
     lyrics_clicked = Signal()
     track_info_clicked = Signal()
+    track_label_clicked = Signal()  # Emitted when user clicks on cover or title
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -185,8 +186,10 @@ class PlayerBar(QFrame):
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(16)
 
-        # 1. Left Section: Track Artwork Cover & Info
+        # Left section: artwork and track info (clickable)
         info_container = QWidget(self)
+        self.info_container = info_container
+        self.info_container.installEventFilter(self)
         info_container.setFixedWidth(260)
         info_layout = QHBoxLayout(info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
@@ -213,14 +216,13 @@ class PlayerBar(QFrame):
         info_layout.addLayout(meta_layout)
         layout.addWidget(info_container)
 
-        # 2. Middle Section: Controls + Timeline Slider
+        # Middle section: controls + timeline
         center_container = QWidget(self)
         center_layout = QVBoxLayout(center_container)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(4)
         center_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Controls Buttons
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(12)
         controls_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -243,7 +245,6 @@ class PlayerBar(QFrame):
         controls_layout.addWidget(self.btn_next)
         center_layout.addLayout(controls_layout)
 
-        # Timeline Slider + Position Labels
         timeline_layout = QHBoxLayout()
         timeline_layout.setSpacing(8)
 
@@ -267,7 +268,7 @@ class PlayerBar(QFrame):
 
         layout.addWidget(center_container, stretch=1)
 
-        # 3. Right Section: Lyrics + Info + Speed + Volume
+        # Right section: extras (lyrics, info, speed, volume)
         right_container = QWidget(self)
         right_container.setFixedWidth(280)
         right_layout = QHBoxLayout(right_container)
@@ -307,6 +308,13 @@ class PlayerBar(QFrame):
         right_layout.addWidget(vol_icon)
         right_layout.addWidget(self.vol_slider)
         layout.addWidget(right_container)
+
+    def eventFilter(self, obj, event):
+        """Capture mouse click on track info area (cover + title) to emit signal."""
+        if obj == self.info_container and event.type() == QEvent.Type.MouseButtonPress:
+            self.track_label_clicked.emit()
+            return True
+        return super().eventFilter(obj, event)
 
     def _open_speed_menu(self) -> None:
         menu = QMenu(self)

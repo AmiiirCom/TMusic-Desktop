@@ -3,6 +3,7 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -35,7 +36,6 @@ def create_rounded_cover_pixmap(
 
     has_drawn = False
 
-    # 1. HD Downloaded Cover
     if cover_path and Path(cover_path).exists():
         src = QPixmap(str(cover_path))
         if not src.isNull():
@@ -50,7 +50,6 @@ def create_rounded_cover_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
-    # 2. Minithumbnail Preview
     if not has_drawn and minithumb_data:
         src = QPixmap()
         if src.loadFromData(minithumb_data):
@@ -65,7 +64,6 @@ def create_rounded_cover_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
-    # 3. Default Musical Gradient
     if not has_drawn:
         bg_color = QColor("#2481cc" if is_active else "#2b5278")
         painter.fillRect(0, 0, render_size, render_size, bg_color)
@@ -74,7 +72,6 @@ def create_rounded_cover_pixmap(
         painter.setFont(font)
         painter.drawText(target_pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
 
-    # 4. Active Equalizer Overlay Badge
     if is_active:
         badge_size = 18 * scale
         badge_x = render_size - badge_size - (3 * scale)
@@ -148,18 +145,15 @@ class TrackItemWidget(QWidget):
         layout.addStretch()
         layout.addLayout(meta_layout)
 
-        # Apply initial active/inactive visuals
         self._apply_visual_state()
 
     def set_active_state(self, is_active: bool) -> None:
-        """Update active highlight in-place without rebuilding the widget tree."""
         if self._is_active == is_active:
             return
         self._is_active = is_active
         self._apply_visual_state()
 
     def _apply_visual_state(self) -> None:
-        """Apply colors, borders, and cover badge based on active playback state."""
         if self._is_active:
             self.setStyleSheet("""
                 TrackItemWidget {
@@ -344,21 +338,15 @@ class TrackListWidget(QListWidget):
             widget.update_cover(cover_path)
 
     def set_active_track(self, track: Track | None) -> None:
-        """
-        In-place highlight update:
-        Toggles state ONLY on old and new widgets. Zero list rebuild, zero scroll jump!
-        """
         new_id = track.id if track else None
         old_id = self._active_track_id
 
         if old_id == new_id:
             return
 
-        # 1. Turn OFF previous active widget
         if old_id and old_id in self._track_widgets:
             self._track_widgets[old_id].set_active_state(False)
 
-        # 2. Turn ON new active widget
         if new_id and new_id in self._track_widgets:
             self._track_widgets[new_id].set_active_state(True)
 
@@ -400,3 +388,14 @@ class TrackListWidget(QListWidget):
         widget = self.itemWidget(item)
         if isinstance(widget, TrackItemWidget):
             self.track_selected.emit(widget.track)
+
+    def scroll_to_track(self, track_id: str) -> None:
+        """Find the item and scroll to it, centering it in the viewport."""
+        if track_id not in self._track_widgets:
+            return
+        widget = self._track_widgets[track_id]
+        for i in range(self.count()):
+            item = self.item(i)
+            if self.itemWidget(item) == widget:
+                self.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+                break

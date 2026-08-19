@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         player_bar.speed_changed.connect(self._on_speed_changed)
         player_bar.lyrics_clicked.connect(self._open_lyrics_dialog)
         player_bar.track_info_clicked.connect(self._open_track_info_dialog)
+        player_bar.track_label_clicked.connect(self._on_track_label_clicked)
 
         saved_vol = self._settings.preferences.volume
         player_bar.vol_slider.setValue(saved_vol)
@@ -288,6 +289,13 @@ class MainWindow(QMainWindow):
 
             case AuthState.READY:
                 self._central_stack.setCurrentWidget(self._main_view)
+
+    @Slot()
+    def _on_track_label_clicked(self) -> None:
+        """Scroll to the current track in the list when user clicks on cover or title."""
+        track = self._player.current_track
+        if track:
+            self._main_view.scroll_to_track(track)
 
 
 def main() -> int:
