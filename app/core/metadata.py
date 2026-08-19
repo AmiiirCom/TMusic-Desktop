@@ -1,10 +1,11 @@
-from dataclasses import dataclass, field
-import io
 import logging
+import io
+import struct
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
-import struct
 from typing import Any
+
 from PySide6.QtCore import QDate, QDateTime
 from PySide6.QtMultimedia import QMediaMetaData, QMediaPlayer
 
@@ -15,7 +16,6 @@ LYRICS_KEY_REGEX = re.compile(
     r"^(lyrics?(-[a-zA-Z0-9_]+)?|unsynced[_\s]?lyrics?|text)$",
     re.IGNORECASE,
 )
-
 
 @dataclass(slots=True)
 class AudioMetadata:
@@ -39,7 +39,7 @@ class AudioMetadata:
 
 
 def _clean_lyrics_text(raw_text: str) -> str:
-    """Clean descriptors, BOM artifacts (like 'Ă'), and extract genuine lyrics."""
+    """Clean descriptors, BOM artifacts, and extract genuine lyrics."""
     if not raw_text:
         return ""
 
@@ -64,18 +64,33 @@ def _clean_lyrics_text(raw_text: str) -> str:
     clean_lower = clean.lower()
     for prefix in descriptor_prefixes:
         if clean_lower.startswith(prefix):
-            clean = clean[len(prefix) :].strip()
+            clean = clean[len(prefix):].strip()
             clean_lower = clean.lower()
 
     return clean.strip()
 
 
 def _decode_id3_text(frame_body: bytes) -> str:
-    """Decode standard ID3 text frame."""
+    """Decode ID3 text frame with robust BOM handling."""
     if not frame_body:
         return ""
+
     encoding = frame_body[0]
     raw = frame_body[1:]
+
+    # Try to detect BOM manually for UTF-16/UTF-32
+    if len(raw) >= 2:
+        if raw[:2] == b'\xfe\xff' or raw[:2] == b'\xff\xfe':
+            try:
+                return raw.decode("utf-16", errors="ignore").replace("\x00", "").strip()
+            except Exception:
+                pass
+        elif raw[:3] == b'\xef\xbb\xbf':
+            try:
+                return raw.decode("utf-8-sig", errors="ignore").replace("\x00", "").strip()
+            except Exception:
+                pass
+
     try:
         if encoding == 1:
             text = raw.decode("utf-16", errors="ignore")
@@ -87,14 +102,15 @@ def _decode_id3_text(frame_body: bytes) -> str:
             text = raw.decode("latin1", errors="ignore")
         return text.replace("\x00", "").strip()
     except Exception:
-        return ""
+        # Fallback: try utf-8 with replacement
+        try:
+            return raw.decode("utf-8", errors="replace").replace("\x00", "").strip()
+        except Exception:
+            return ""
 
 
 def _parse_uslt_frame(frame_body: bytes) -> str:
-    """
-    Parse USLT / SYLT lyrics frame accurately separating descriptor from lyrics text
-    across all encodings and language codes.
-    """
+    """Parse USLT/SYLT lyrics frame robustly."""
     if len(frame_body) < 4:
         return ""
 
@@ -168,7 +184,7 @@ def _scan_raw_uslt_fallback(data: bytes) -> str:
         if pos == -1 or pos + 10 >= len(data):
             break
 
-        size_bytes = data[pos + 4 : pos + 8]
+        size_bytes = data[pos + 4: pos + 8]
         size_std = struct.unpack(">I", size_bytes)[0]
         size_sync = (
             (size_bytes[0] << 21)
@@ -179,7 +195,7 @@ def _scan_raw_uslt_fallback(data: bytes) -> str:
 
         for sz in (size_std, size_sync):
             if 4 < sz <= len(data) - (pos + 10):
-                body = data[pos + 10 : pos + 10 + sz]
+                body = data[pos + 10: pos + 10 + sz]
                 lyrics = _parse_uslt_frame(body)
                 if lyrics and len(lyrics) > 20:
                     return lyrics
@@ -190,7 +206,7 @@ def _scan_raw_uslt_fallback(data: bytes) -> str:
 
 
 def parse_id3v2_tags_from_bytes(data: bytes) -> AudioMetadata:
-    """Parse ID3v2 frames with version-aware sizes and clean lyrics extraction."""
+    """Parse ID3v2 frames with robust error handling, skipping corrupted frames."""
     meta = AudioMetadata()
     if len(data) < 10 or data[:3] != b"ID3":
         return meta
@@ -204,72 +220,86 @@ def parse_id3v2_tags_from_bytes(data: bytes) -> AudioMetadata:
             | (size_bytes[2] << 7)
             | size_bytes[3]
         )
-        tag_data = data[10 : min(len(data), 10 + tag_size)]
+        tag_data = data[10: min(len(data), 10 + tag_size)]
         stream = io.BytesIO(tag_data)
 
         while stream.tell() < len(tag_data) - 10:
-            frame_id_bytes = stream.read(4)
-            if len(frame_id_bytes) < 4 or frame_id_bytes[0] == 0:
+            try:
+                frame_id_bytes = stream.read(4)
+                if len(frame_id_bytes) < 4 or frame_id_bytes[0] == 0:
+                    break
+
+                frame_id = frame_id_bytes.decode("latin1", errors="ignore")
+                frame_size_bytes = stream.read(4)
+                _flags = stream.read(2)
+
+                if len(frame_size_bytes) < 4:
+                    break
+
+                if version_major == 4:
+                    frame_size = (
+                        (frame_size_bytes[0] << 21)
+                        | (frame_size_bytes[1] << 14)
+                        | (frame_size_bytes[2] << 7)
+                        | frame_size_bytes[3]
+                    )
+                else:
+                    frame_size = struct.unpack(">I", frame_size_bytes)[0]
+
+                if frame_size <= 0 or frame_size > len(tag_data) - stream.tell():
+                    # Skip this frame if size is invalid
+                    logger.debug("Skipping frame %s due to invalid size", frame_id)
+                    break
+
+                frame_body = stream.read(frame_size)
+                if len(frame_body) != frame_size:
+                    logger.debug("Incomplete frame %s, skipping", frame_id)
+                    break
+
+                # --- Metadata extraction with per-frame error handling ---
+                if frame_id in ("TDRC", "TYER", "TDRL"):
+                    date_val = _decode_id3_text(frame_body)
+                    if date_val and not meta.release_date:
+                        meta.release_date = date_val
+                elif frame_id == "TIT2":
+                    meta.title = _decode_id3_text(frame_body)
+                elif frame_id in ("TPE1", "TPE2") and not meta.artist:
+                    meta.artist = _decode_id3_text(frame_body)
+                elif frame_id == "TALB":
+                    meta.album = _decode_id3_text(frame_body)
+                elif frame_id == "TCON":
+                    meta.genre = _decode_id3_text(frame_body)
+                elif frame_id == "TCOM":
+                    meta.composer = _decode_id3_text(frame_body)
+                elif frame_id == "TPUB":
+                    meta.publisher = _decode_id3_text(frame_body)
+                elif frame_id == "TRCK":
+                    meta.track_number = _decode_id3_text(frame_body)
+                elif frame_id in ("USLT", "SYLT", "ULT"):
+                    lyrics_text = _parse_uslt_frame(frame_body)
+                    if lyrics_text and len(lyrics_text) > 15:
+                        meta.lyrics = lyrics_text
+                elif frame_id == "TXXX":
+                    try:
+                        desc, val = _parse_txxx_frame(frame_body)
+                        if LYRICS_KEY_REGEX.match(desc.strip()) and val.strip():
+                            clean_val = _clean_lyrics_text(val)
+                            if clean_val and len(clean_val) > 15:
+                                meta.lyrics = clean_val
+                    except Exception:
+                        pass
+                # Ignore other frames silently (including COMM, etc.)
+            except Exception as frame_exc:
+                # Log at DEBUG level only; skip this frame
+                logger.debug("Skipping a corrupted ID3 frame: %s", frame_exc)
+                # Try to recover position: seek to next frame boundary (not trivial, but we continue)
+                # We can't reliably recover, so break out of loop to avoid infinite loop.
                 break
-
-            frame_id = frame_id_bytes.decode("latin1", errors="ignore")
-            frame_size_bytes = stream.read(4)
-            _flags = stream.read(2)
-
-            if len(frame_size_bytes) < 4:
-                break
-
-            if version_major == 4:
-                frame_size = (
-                    (frame_size_bytes[0] << 21)
-                    | (frame_size_bytes[1] << 14)
-                    | (frame_size_bytes[2] << 7)
-                    | frame_size_bytes[3]
-                )
-            else:
-                frame_size = struct.unpack(">I", frame_size_bytes)[0]
-
-            if frame_size <= 0 or frame_size > len(tag_data) - stream.tell():
-                break
-
-            frame_body = stream.read(frame_size)
-
-            # Metadata Fields
-            if frame_id in ("TDRC", "TYER", "TDRL"):
-                date_val = _decode_id3_text(frame_body)
-                if date_val and not meta.release_date:
-                    meta.release_date = date_val
-            elif frame_id == "TIT2":
-                meta.title = _decode_id3_text(frame_body)
-            elif frame_id in ("TPE1", "TPE2") and not meta.artist:
-                meta.artist = _decode_id3_text(frame_body)
-            elif frame_id == "TALB":
-                meta.album = _decode_id3_text(frame_body)
-            elif frame_id == "TCON":
-                meta.genre = _decode_id3_text(frame_body)
-            elif frame_id == "TCOM":
-                meta.composer = _decode_id3_text(frame_body)
-            elif frame_id == "TPUB":
-                meta.publisher = _decode_id3_text(frame_body)
-            elif frame_id == "TRCK":
-                meta.track_number = _decode_id3_text(frame_body)
-
-            # --- Strict Lyrics Extraction ---
-            elif frame_id in ("USLT", "SYLT", "ULT"):
-                lyrics_text = _parse_uslt_frame(frame_body)
-                if lyrics_text and len(lyrics_text) > 15:
-                    meta.lyrics = lyrics_text
-
-            elif frame_id == "TXXX":
-                desc, val = _parse_txxx_frame(frame_body)
-                if LYRICS_KEY_REGEX.match(desc.strip()) and val.strip():
-                    clean_val = _clean_lyrics_text(val)
-                    if clean_val and len(clean_val) > 15:
-                        meta.lyrics = clean_val
 
     except Exception as exc:
         logger.debug("ID3 structured parser exception: %s", exc)
 
+    # Fallback scan for USLT if not found
     if not meta.has_lyrics:
         raw_lyrics = _scan_raw_uslt_fallback(data)
         if raw_lyrics:
@@ -302,6 +332,7 @@ def extract_metadata_from_player(
     if bytes_to_parse:
         metadata = parse_id3v2_tags_from_bytes(bytes_to_parse)
 
+    # Also try Qt's metadata (as fallback, but avoid overriding lyrics if already found)
     meta = player.metaData()
     if not meta.isEmpty():
         if not metadata.title:
@@ -333,6 +364,7 @@ def extract_metadata_from_player(
         if isinstance(bitrate, (int, float)) and bitrate > 0:
             metadata.bitrate_kbps = int(bitrate) // 1000
 
+        # Only try to get lyrics from Qt if not already found
         if not metadata.has_lyrics:
             for key in meta.keys():
                 key_name = str(key).strip().lower()
