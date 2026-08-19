@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._central_stack)
 
         # Main Dashboard View
-        self._main_view = MainView(self)
+        self._main_view = MainView(self._config, self)
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
@@ -126,7 +126,7 @@ class MainWindow(QMainWindow):
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
         # System Tray
-        self._tray = TrayService(self, self._player)
+        self._tray = TrayService(self, self._player, self._config)
         self._tray.show_window_requested.connect(self._restore_window)
         self._tray.quit_requested.connect(self._quit_application)
 
@@ -176,7 +176,7 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
     def _open_settings_dialog(self) -> None:
-        dialog = SettingsDialog(self._cache, self._settings, self)
+        dialog = SettingsDialog(self._cache, self._settings, self._config, self)
         dialog.proxy_saved.connect(self._on_proxy_configured)
         dialog.logout_requested.connect(self._on_perform_logout)
         dialog.exec()
@@ -211,13 +211,13 @@ class MainWindow(QMainWindow):
 
         # Shut down background services to release file locks
         try:
-            self._telegram.stop()          # Stops TDLib worker thread
-            self._stream_server.stop()     # Stops HTTP streaming server
-            self._tdlib_adapter.close()    # Closes the native TDLib client
+            self._telegram.stop()
+            self._stream_server.stop()
+            self._tdlib_adapter.close()
         except Exception as exc:
             logger.warning("Error during service shutdown: %s", exc)
 
-        # Delete entire organization directories (AppData/Roaming/TMusicOrg and AppData/Local/TMusicOrg)
+        # Delete entire organization directories (now named TMusicDesktop)
         for dir_path in (self._config.org_data_root, self._config.org_cache_root):
             if dir_path.exists():
                 try:

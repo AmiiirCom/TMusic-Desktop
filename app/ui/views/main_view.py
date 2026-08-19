@@ -13,13 +13,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.config import AppConfig
 from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
 from app.ui.components.chat_list_widget import OwnedChatListWidget
 from app.ui.components.player_bar import PlayerBar
 from app.ui.components.track_list_widget import TrackListWidget
-
 
 def create_circular_avatar_pixmap(
     photo_path: str | None,
@@ -86,7 +86,6 @@ def create_circular_avatar_pixmap(
     pixmap.setDevicePixelRatio(scale)
     return pixmap
 
-
 class MainView(QWidget):
     """Telegram Desktop styled main dashboard view with live deletions and delta sync."""
 
@@ -95,8 +94,9 @@ class MainView(QWidget):
     load_more_tracks_requested = Signal(object)
     settings_requested = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._config = config
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._active_chat: OwnedChat | None = None
         self._init_ui()
@@ -269,7 +269,7 @@ class MainView(QWidget):
         root_layout.addWidget(splitter, stretch=1)
 
         # 3. Bottom Player Bar
-        self.player_bar = PlayerBar(self)
+        self.player_bar = PlayerBar(self._config, self)
         root_layout.addWidget(self.player_bar)
 
     def set_user(self, user: TelegramUser) -> None:

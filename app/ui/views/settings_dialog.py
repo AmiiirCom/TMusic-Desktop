@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.cache.service import CacheManager
+from app.config import AppConfig
 from app.settings.service import SettingsService
 from app.ui.views.base_modal import BaseModalDialog
 
@@ -28,11 +29,14 @@ class SettingsDialog(BaseModalDialog):
         self,
         cache_manager: CacheManager,
         settings_service: SettingsService,
+        config: AppConfig,
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(title="تنظیمات و حافظه TMusic", parent=parent)
+        title = f"تنظیمات و حافظه {config.app_name}"
+        super().__init__(title=title, parent=parent)
         self._cache = cache_manager
         self._settings = settings_service
+        self._config = config
         self.card_frame.setFixedWidth(460)
         self._init_body()
 
@@ -92,10 +96,13 @@ class SettingsDialog(BaseModalDialog):
         storage_actions_row.setSpacing(10)
 
         cache_info_layout = QVBoxLayout()
-        cache_label = QLabel("حجم کش (تا ۲۵۰ مگابایت):")
+        cache_label = QLabel("حجم کش:")
         cache_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
-        self.cache_size_val = QLabel(self._cache.get_formatted_size())
+
+        max_size_str = self._cache.get_formatted_max_size()
+        self.cache_size_val = QLabel(f"{self._cache.get_formatted_size()} / {max_size_str}")
         self.cache_size_val.setStyleSheet("font-size: 13px; font-weight: bold; color: #4fae4e;")
+
         cache_info_layout.addWidget(cache_label)
         cache_info_layout.addWidget(self.cache_size_val)
 
@@ -143,7 +150,8 @@ class SettingsDialog(BaseModalDialog):
 
     def _on_clear_cache(self) -> None:
         self._cache.clear_all()
-        self.cache_size_val.setText(self._cache.get_formatted_size())
+        max_size_str = self._cache.get_formatted_max_size()
+        self.cache_size_val.setText(f"{self._cache.get_formatted_size()} / {max_size_str}")
         self.downloads_size_val.setText(self._cache.get_formatted_downloads_size())
         self.cache_cleared.emit()
 

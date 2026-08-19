@@ -45,13 +45,18 @@ _ENV_VARS = _load_env(_ROOT_DIR / ".env")
 @dataclass(slots=True, frozen=True)
 class AppConfig:
     app_name: str = "TMusic"
-    app_version: str = "1.0.0"
+    app_version: str = "0.1.0"
     organization_name: str = "TMusicOrg"
     organization_domain: str = "tmusic.local"
 
     # Legacy paths for backward compatibility
     root_dir: Path = field(default=_ROOT_DIR)
     bundle_dir: Path = field(default=_BUNDLE_DIR)
+
+    @property
+    def app_full_name(self) -> str:
+        """Full application name including version for session identification."""
+        return f"{self.app_name} Desktop {self.app_version}"
 
     @property
     def resources_dir(self) -> Path:

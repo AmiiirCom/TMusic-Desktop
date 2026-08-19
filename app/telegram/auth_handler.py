@@ -7,7 +7,6 @@ from app.telegram.enums import AuthState
 
 logger = logging.getLogger("tmusic.telegram.auth")
 
-
 class AuthHandler:
     """Manages TDLib authorization state machine and credential submissions."""
 
@@ -80,7 +79,7 @@ class AuthHandler:
             "api_id": self._config.api_id,
             "api_hash": self._config.api_hash,
             "system_language_code": "fa",
-            "device_model": "Desktop",
+            "device_model": self._config.app_full_name,
             "system_version": "Windows",
             "application_version": self._config.app_version,
             "enable_storage_optimizer": True,

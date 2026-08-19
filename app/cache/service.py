@@ -150,14 +150,6 @@ class CacheManager:
                             logger.warning("Could not remove orphaned file %s: %s", item, exc)
                         continue
 
-                    # If tracked but incomplete (not fully downloaded?) we don't have a flag.
-                    # We can check if file is older than threshold and its size is 0 or small?
-                    # We'll rely on TDLib's own handling; but we can also remove files that
-                    # have not been accessed for a long time and are not complete.
-                    # For now, we only remove orphaned files.
-                    # Additional logic: if file is older than threshold and its size is less than expected?
-                    # We don't have expected size here. So we skip.
-
             if removed:
                 logger.info("Cleaned up %d orphaned/incomplete cache files.", removed)
 
@@ -175,8 +167,7 @@ class CacheManager:
             self._metadata.clear()
             self._save_metadata()
 
-            # Also clear TDLib's file cache directory (except maybe we should ask TDLib?)
-            # We'll just delete files in tdlib_files_dir and thumb_cache_dir
+            # Also clear TDLib's file cache directory
             for dir_path in (self._config.tdlib_files_dir, self._config.thumb_cache_dir):
                 if dir_path.exists():
                     for item in dir_path.glob("*"):
@@ -203,6 +194,15 @@ class CacheManager:
         if size < 1024 * 1024:
             return f"{size / 1024:.1f} KB"
         return f"{size / (1024 * 1024):.1f} MB"
+
+    def get_formatted_max_size(self) -> str:
+        """Return formatted maximum cache size limit."""
+        if MAX_CACHE_SIZE_BYTES < 1024 * 1024:
+            return f"{MAX_CACHE_SIZE_BYTES / 1024:.0f} KB"
+        elif MAX_CACHE_SIZE_BYTES < 1024 * 1024 * 1024:
+            return f"{MAX_CACHE_SIZE_BYTES / (1024 * 1024):.0f} MB"
+        else:
+            return f"{MAX_CACHE_SIZE_BYTES / (1024 * 1024 * 1024):.0f} GiB"
 
     def get_downloads_size(self) -> int:
         """Calculate size of user downloads folder."""
@@ -296,7 +296,6 @@ class CacheManager:
         if not self._adapter.is_loaded:
             return
         try:
-            # Use execute or send? deleteFile is asynchronous, we can just send.
             self._adapter.send({
                 "@type": "deleteFile",
                 "file_id": file_id,

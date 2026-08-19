@@ -3,11 +3,11 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 
+from app.config import AppConfig
 from app.models.track import Track
 from app.player.service import PlayerService
 
 logger = logging.getLogger("tmusic.platform.tray")
-
 
 def create_default_tray_icon() -> QIcon:
     """Generate a clean Telegram-blue circular musical note icon."""
@@ -29,20 +29,20 @@ def create_default_tray_icon() -> QIcon:
 
     return QIcon(pixmap)
 
-
 class TrayService(QObject):
     """System tray integration with background playback menu and safe null handling."""
 
     show_window_requested = Signal()
     quit_requested = Signal()
 
-    def __init__(self, parent_widget: QWidget, player_service: PlayerService) -> None:
+    def __init__(self, parent_widget: QWidget, player_service: PlayerService, config: AppConfig) -> None:
         super().__init__(parent_widget)
         self._parent = parent_widget
         self._player = player_service
+        self._config = config
 
         self._tray = QSystemTrayIcon(create_default_tray_icon(), parent_widget)
-        self._tray.setToolTip("TMusic Desktop")
+        self._tray.setToolTip(f"{self._config.app_name} Desktop")  # استفاده از config
 
         self._init_menu()
         self._tray.activated.connect(self._on_activated)
@@ -78,7 +78,7 @@ class TrayService(QObject):
             }
         """)
 
-        self.track_info_action = QAction("🎵 TMusic Player", menu)
+        self.track_info_action = QAction(f"🎵 {self._config.app_name} Player", menu)
         self.track_info_action.setEnabled(False)
         menu.addAction(self.track_info_action)
         menu.addSeparator()
@@ -117,12 +117,12 @@ class TrayService(QObject):
     def _on_track_changed(self, track: Track | None) -> None:
         """Update tray menu text safely when track changes or is cleared."""
         if track is None:
-            self.track_info_action.setText("🎵 TMusic Player")
-            self._tray.setToolTip("TMusic Desktop")
+            self.track_info_action.setText(f"🎵 {self._config.app_name} Player")
+            self._tray.setToolTip(f"{self._config.app_name} Desktop")
             return
 
         self.track_info_action.setText(f"🎵 {track.display_title[:25]}")
-        self._tray.setToolTip(f"TMusic: {track.display_title} - {track.display_artist}")
+        self._tray.setToolTip(f"{self._config.app_name}: {track.display_title} - {track.display_artist}")
 
     def _on_playback_state_changed(self, is_playing: bool) -> None:
         self.play_pause_action.setText("توقف (Pause)" if is_playing else "پخش (Play)")

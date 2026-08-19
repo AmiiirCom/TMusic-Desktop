@@ -12,11 +12,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.config import AppConfig
 from app.core.metadata import AudioMetadata
 from app.models.track import Track
 
 SPEED_OPTIONS = (0.75, 1.0, 1.25, 1.5, 1.75)
-
 
 def create_playerbar_cover_pixmap(
     minithumb_data: bytes | None = None,
@@ -72,7 +72,6 @@ def create_playerbar_cover_pixmap(
     painter.end()
     return target
 
-
 class PlayerBar(QFrame):
     """Telegram Desktop styled bottom audio player bar with full reset support."""
 
@@ -86,8 +85,9 @@ class PlayerBar(QFrame):
     track_info_clicked = Signal()
     track_label_clicked = Signal()  # Emitted when user clicks on cover or title
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._config = config
         self.setFixedHeight(84)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._current_track: Track | None = None
@@ -206,7 +206,7 @@ class PlayerBar(QFrame):
         self.title_label = QLabel("آهنگی در حال پخش نیست")
         self.title_label.setStyleSheet("font-size: 13px; font-weight: bold;")
 
-        self.artist_label = QLabel("TMusic Desktop")
+        self.artist_label = QLabel(f"{self._config.app_name} Desktop")
         self.artist_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
 
         meta_layout.addWidget(self.title_label)
@@ -373,7 +373,7 @@ class PlayerBar(QFrame):
         self._current_track = None
         self._duration_ms = 0
         self.title_label.setText("آهنگی در حال پخش نیست")
-        self.artist_label.setText("TMusic Desktop")
+        self.artist_label.setText(f"{self._config.app_name} Desktop")
         self.dur_label.setText("00:00")
         self.pos_label.setText("00:00")
         self.slider.setValue(0)
