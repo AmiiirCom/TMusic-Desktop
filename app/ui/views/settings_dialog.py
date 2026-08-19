@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -91,16 +92,27 @@ class SettingsDialog(BaseModalDialog):
         btn_open_folder.clicked.connect(self._on_open_downloads_folder)
         self.body_layout.addWidget(btn_open_folder)
 
+        # Storage info row: Cache size + Downloads size + Clear button
         storage_actions_row = QHBoxLayout()
         storage_actions_row.setSpacing(10)
 
-        cache_info_layout = QHBoxLayout()
+        # Cache size
+        cache_info_layout = QVBoxLayout()
         cache_label = QLabel("حجم کش:")
         cache_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
-        self.size_val = QLabel(self._cache.get_formatted_cache_size())
-        self.size_val.setStyleSheet("font-size: 13px; font-weight: bold; color: #4fae4e;")
+        self.cache_size_val = QLabel(self._cache.get_formatted_cache_size())
+        self.cache_size_val.setStyleSheet("font-size: 13px; font-weight: bold; color: #4fae4e;")
         cache_info_layout.addWidget(cache_label)
-        cache_info_layout.addWidget(self.size_val)
+        cache_info_layout.addWidget(self.cache_size_val)
+
+        # Downloads size
+        downloads_info_layout = QVBoxLayout()
+        downloads_label = QLabel("حجم دانلودها:")
+        downloads_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
+        self.downloads_size_val = QLabel(self._cache.get_formatted_downloads_size())
+        self.downloads_size_val.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
+        downloads_info_layout.addWidget(downloads_label)
+        downloads_info_layout.addWidget(self.downloads_size_val)
 
         btn_clear = QPushButton("🗑️ پاک‌سازی کش")
         btn_clear.setStyleSheet("background-color: #242f3d; color: #e53935; border: 1px solid #3b242d;")
@@ -108,6 +120,7 @@ class SettingsDialog(BaseModalDialog):
         btn_clear.clicked.connect(self._on_clear_cache)
 
         storage_actions_row.addLayout(cache_info_layout)
+        storage_actions_row.addLayout(downloads_info_layout)
         storage_actions_row.addStretch()
         storage_actions_row.addWidget(btn_clear)
         self.body_layout.addLayout(storage_actions_row)
@@ -139,7 +152,7 @@ class SettingsDialog(BaseModalDialog):
 
     def _on_clear_cache(self) -> None:
         self._cache.clear_cache()
-        self.size_val.setText(self._cache.get_formatted_cache_size())
+        self.cache_size_val.setText(self._cache.get_formatted_cache_size())
         self.cache_cleared.emit()
 
     def _on_logout_clicked(self) -> None:

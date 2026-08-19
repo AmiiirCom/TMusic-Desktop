@@ -15,19 +15,51 @@ class CacheService:
 
     @property
     def downloads_path(self) -> Path:
+        """Path to user-facing TMusicDownloads folder."""
         return self._config.downloads_dir
 
     def get_cache_size_bytes(self) -> int:
-        """Calculate total disk usage of completed music files in TMusicDownloads."""
+        """
+        Calculate total disk usage of internal cache:
+        - TDLib temporary files (data/cache)
+        - Thumbnails (data/tdlib/thumbnails)
+        """
+        total = 0
+
+        # 1. TDLib cache directory
+        if self._config.tdlib_files_dir.exists():
+            for p in self._config.tdlib_files_dir.rglob("*"):
+                if p.is_file():
+                    total += p.stat().st_size
+
+        # 2. Thumbnails directory
+        thumb_dir = self._config.tdlib_dir / "thumbnails"
+        if thumb_dir.exists():
+            for p in thumb_dir.rglob("*"):
+                if p.is_file():
+                    total += p.stat().st_size
+
+        return total
+
+    def get_formatted_cache_size(self) -> str:
+        """Return formatted internal cache size."""
+        size = self.get_cache_size_bytes()
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size / (1024 * 1024):.1f} MB"
+
+    def get_downloads_size_bytes(self) -> int:
+        """Calculate total size of TMusicDownloads folder."""
         total = 0
         if self._config.downloads_dir.exists():
-            for p in self._config.downloads_dir.glob("*"):
+            for p in self._config.downloads_dir.rglob("*"):
                 if p.is_file():
                     total += p.stat().st_size
         return total
 
-    def get_formatted_cache_size(self) -> str:
-        size = self.get_cache_size_bytes()
+    def get_formatted_downloads_size(self) -> str:
+        """Return formatted TMusicDownloads size."""
+        size = self.get_downloads_size_bytes()
         if size < 1024 * 1024:
             return f"{size / 1024:.1f} KB"
         return f"{size / (1024 * 1024):.1f} MB"
