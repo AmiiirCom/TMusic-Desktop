@@ -77,6 +77,10 @@ class MainWindow(QMainWindow):
         self._main_view.settings_requested.connect(self._open_settings_dialog)
         self._main_view.search_full_requested.connect(self._telegram.search_tracks)
 
+        # Chat search signals
+        self._main_view.chat_search_requested.connect(self._telegram.search_chats)
+        self._telegram.chat_search_results_received.connect(self._main_view.on_chat_search_results)
+
         # Login View
         self._login_view = LoginView(self)
         self._login_view.phone_submitted.connect(self._telegram.send_phone_number)

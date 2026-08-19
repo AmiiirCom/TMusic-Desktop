@@ -52,7 +52,8 @@ class TelegramService(QObject):
     file_download_completed = Signal(int, str)
     network_traffic_received = Signal(int, int)
 
-    search_results_received = Signal(object, list, bool)
+    search_results_received = Signal(object, list, bool)  # (chat_id, tracks, has_more)
+    chat_search_results_received = Signal(list)  # list[OwnedChat]
 
     def __init__(
         self,
@@ -93,6 +94,7 @@ class TelegramService(QObject):
             adapter=self._adapter,
             settings_service=self._settings,
             on_owned_chats_updated=self.owned_chats_loaded.emit,
+            on_search_results=self._on_chat_search_results,
         )
 
         self._tracks = TrackHandler(
@@ -194,12 +196,14 @@ class TelegramService(QObject):
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
 
+        # Network Stats
         if extra == "periodic_net_stats" and update_type == "networkStatistics":
             total_rx = sum(e.get("received_bytes", 0) for e in update.get("entries", []))
             total_tx = sum(e.get("sent_bytes", 0) for e in update.get("entries", []))
             self.network_traffic_received.emit(total_rx, total_tx)
             return
 
+        # Normal track loading (pagination)
         if isinstance(extra, str) and extra.startswith("load_tracks_"):
             parts = extra.split("_")
             chat_id = int(parts[2])
@@ -211,7 +215,8 @@ class TelegramService(QObject):
             elif update_type == "error" and is_initial:
                 self.tracks_loaded.emit(chat_id, [], False)
             return
-        
+
+        # Full track search pages
         if isinstance(extra, str) and extra.startswith("search_tracks_"):
             if update_type in ("foundChatMessages", "messages"):
                 parts = extra.split("_")
@@ -224,32 +229,55 @@ class TelegramService(QObject):
 
                     messages = update.get("messages", [])
                     next_from_id = update.get("next_from_message_id", 0)
-
-                    # Process the page
                     self._tracks.process_search_page(chat_id, messages, next_from_id, 100, extra)
 
             elif update_type == "error":
-                # Try to extract chat_id from extra
                 parts = extra.split("_")
                 if len(parts) >= 3:
                     try:
                         chat_id = int(parts[2])
                         logger.warning("Search error for chat %d: %s", chat_id, update.get("message", ""))
-                        # Clean up search state on error
                         if chat_id in self._tracks._search_states:
                             del self._tracks._search_states[chat_id]
                     except ValueError:
                         pass
             return
 
+        # Chat search
+        if isinstance(extra, str) and extra.startswith("search_chats_"):
+            if update_type == "chats":
+                chat_ids = update.get("chat_ids", [])
+                self._chats.process_search_results(chat_ids, extra)
+            elif update_type == "error":
+                logger.warning("Chat search error: %s", update.get("message", ""))
+            return
+
+        # Chat details from search
+        if isinstance(extra, str) and extra.startswith("search_chat_details_"):
+            if update_type == "chat":
+                # extra format: search_chat_details_{search_id}_{chat_id}
+                parts = extra.split("_")
+                if len(parts) >= 5:
+                    # Extract search_id (join parts 3 to second-last)
+                    search_id = "_".join(parts[3:-1])
+                    try:
+                        chat_id = int(parts[-1])
+                    except ValueError:
+                        return
+                    self._chats.process_chat_details_from_search(search_id, chat_id, update)
+            return
+
+        # Chat pagination
         if extra in ("load_main_chats", "load_archive_chats"):
             self._chats.handle_pagination_response(extra, update_type)
             return
 
+        # Supergroup ownership queries
         if isinstance(extra, str) and extra.startswith("check_supergroup_") and update_type == "supergroup":
             self._chats.process_supergroup_update(update)
             return
 
+        # Pure real-time event stream
         match update_type:
             case "updateAuthorizationState":
                 self._auth.process_update(update.get("authorization_state", {}))
@@ -473,6 +501,15 @@ class TelegramService(QObject):
             return
         logger.info("Search requested for chat %d, query='%s'", chat_id, query)
         self._tracks.search_tracks(chat_id, query)
+
+    @Slot(str)
+    def search_chats(self, query: str) -> None:
+        """Search for chats by name."""
+        self._chats.search_chats(query)
+
+    def _on_chat_search_results(self, chats: list[OwnedChat]) -> None:
+        """Handle chat search results and emit signal."""
+        self.chat_search_results_received.emit(chats)
 
     def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
         self._adapter.send({

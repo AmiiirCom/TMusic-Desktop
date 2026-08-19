@@ -58,13 +58,19 @@ class ChatItemWidget(QWidget):
 
 
 class OwnedChatListWidget(QListWidget):
-    """List widget holding user owned music channels."""
+    """List widget holding user owned music channels with search capability."""
 
     chat_selected = Signal(OwnedChat)
+    search_requested = Signal(str)  # Emitted when user types a search query
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self._all_chats: list[OwnedChat] = []
+        self._current_query: str = ""
+        self._chat_widgets: dict[int, ChatItemWidget] = {}
+        self._active_chat_id: int | None = None
+
         self.setStyleSheet("""
             QListWidget {
                 background-color: #17212b;
@@ -85,16 +91,82 @@ class OwnedChatListWidget(QListWidget):
         """)
         self.itemClicked.connect(self._on_item_clicked)
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def set_chats(self, chats: list[OwnedChat]) -> None:
+        """Set the full list of chats and render them."""
+        self._all_chats = list(chats)
+        self._populate(self._all_chats)
+
+    def filter_chats(self, query: str) -> None:
+        self._current_query = query.strip().lower()
+
+        if not self._current_query:
+            self._populate(self._all_chats)
+        else:
+            filtered = [
+                chat
+                for chat in self._all_chats
+                if self._current_query in chat.title.lower()
+            ]
+            self._populate(filtered)
+
+        self.search_requested.emit(query.strip())
+
+    def set_active_chat(self, chat_id: int | None) -> None:
+        """Highlight the selected chat."""
+        self._active_chat_id = chat_id
+        # Update visual state of items
+        for i in range(self.count()):
+            item = self.item(i)
+            widget = self.itemWidget(item)
+            if isinstance(widget, ChatItemWidget):
+                is_active = (widget.chat.id == chat_id)
+                if is_active:
+                    item.setSelected(True)
+                else:
+                    item.setSelected(False)
+
+    def update_chat_cover(self, chat_id: int, cover_path: str) -> None:
+        """Update cover for a specific chat (not used in chat list, kept for consistency)."""
+        pass
+
+    def scroll_to_chat(self, chat_id: int) -> None:
+        """Scroll to a specific chat item."""
+        for i in range(self.count()):
+            item = self.item(i)
+            widget = self.itemWidget(item)
+            if isinstance(widget, ChatItemWidget) and widget.chat.id == chat_id:
+                self.scrollToItem(item, QListWidget.ScrollHint.PositionAtCenter)
+                break
+
+    def restore_normal_chats(self) -> None:
+        """Restore the original chat list (after search)."""
+        self._populate(self._all_chats)
+        self._current_query = ""
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _populate(self, chats: list[OwnedChat]) -> None:
         self.clear()
+        self._chat_widgets.clear()
         for chat in chats:
             item = QListWidgetItem(self)
             widget = ChatItemWidget(chat)
             item.setSizeHint(widget.sizeHint())
             self.addItem(item)
             self.setItemWidget(item, widget)
+            self._chat_widgets[chat.id] = widget
+
+            if self._active_chat_id == chat.id:
+                item.setSelected(True)
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         widget = self.itemWidget(item)
         if isinstance(widget, ChatItemWidget):
             self.chat_selected.emit(widget.chat)
+            self.set_active_chat(widget.chat.id)
