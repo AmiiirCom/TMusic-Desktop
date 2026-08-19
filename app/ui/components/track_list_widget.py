@@ -359,7 +359,6 @@ class TrackListWidget(QListWidget):
 
     def filter_tracks(self, query: str) -> None:
         self._current_query = query.strip().lower()
-
         if not self._current_query:
             self._populate(self._all_tracks)
         else:
@@ -370,7 +369,6 @@ class TrackListWidget(QListWidget):
                 or self._current_query in t.display_artist.lower()
             ]
             self._populate(filtered)
-
         self.search_requested.emit(query.strip())
 
     # ------------------------------------------------------------------

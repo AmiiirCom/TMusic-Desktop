@@ -111,10 +111,10 @@ class MainView(QWidget):
         self._search_query = ""
         self._init_ui()
 
-        # Search debounce timer (300ms)
+        # Search debounce timer (500ms for comfortable typing)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(300)
+        self._search_timer.setInterval(500)
         self._search_timer.timeout.connect(self._perform_full_search)
 
         self.search_input.textChanged.connect(self._on_search_text_changed)
@@ -246,6 +246,7 @@ class MainView(QWidget):
             }
             QLineEdit:focus { border-color: #2481cc; }
         """)
+        self.search_input.setClearButtonEnabled(True)
         self.search_input.hide()
 
         header_layout.addWidget(self.selected_chat_title)
@@ -356,6 +357,7 @@ class MainView(QWidget):
             self._original_tracks = list(self.track_list._all_tracks)
             self._is_searching = True
 
+        # Hide loading indicator
         if not tracks:
             logger.info("Search returned 0 results, showing placeholder")
             self.placeholder_msg.setText("🔍 نتیجه‌ای برای جستجوی شما یافت نشد!")
@@ -451,8 +453,7 @@ class MainView(QWidget):
         if not text.strip():
             self.restore_normal_tracks()
         else:
-            # Show loading indicator immediately (will be replaced by results later)
-            self.content_stack.setCurrentIndex(2)
+            # Only restart timer, do NOT show loading indicator yet
             self._search_timer.start()
 
     def _on_search_requested(self, query: str) -> None:
@@ -462,5 +463,7 @@ class MainView(QWidget):
     def _perform_full_search(self) -> None:
         query = self.search_input.text().strip()
         if self._active_chat and query:
+            # Show loading indicator only when actually sending request
+            self.content_stack.setCurrentIndex(2)
             logger.info("Performing full search for chat %d, query='%s'", self._active_chat.id, query)
             self.search_full_requested.emit(str(self._active_chat.id), query)
