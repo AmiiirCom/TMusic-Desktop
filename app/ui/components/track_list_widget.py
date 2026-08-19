@@ -1,6 +1,7 @@
 from pathlib import Path
+from typing import Any
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -19,7 +20,10 @@ def create_rounded_cover_pixmap(
     size: int = 44,
     is_active: bool = False,
 ) -> QPixmap:
-    target_pixmap = QPixmap(size, size)
+    """Render a crystal-clear anti-aliased 2x Retina cover with an active equalizer badge."""
+    scale = 2
+    render_size = size * scale
+    target_pixmap = QPixmap(render_size, render_size)
     target_pixmap.fill(QColor(0, 0, 0, 0))
 
     painter = QPainter(target_pixmap)
@@ -27,76 +31,93 @@ def create_rounded_cover_pixmap(
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
     path = QPainterPath()
-    path.addRoundedRect(0, 0, size, size, 8, 8)
+    path.addRoundedRect(0, 0, render_size, render_size, 8 * scale, 8 * scale)
     painter.setClipPath(path)
 
     has_drawn = False
 
+    # 1. HD Downloaded Cover
     if cover_path and Path(cover_path).exists():
         src = QPixmap(str(cover_path))
         if not src.isNull():
             scaled = src.scaled(
-                size,
-                size,
+                render_size,
+                render_size,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            x = (scaled.width() - size) // 2
-            y = (scaled.height() - size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
+            x = (scaled.width() - render_size) // 2
+            y = (scaled.height() - render_size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
+    # 2. Minithumbnail Preview
     if not has_drawn and minithumb_data:
         src = QPixmap()
         if src.loadFromData(minithumb_data):
             scaled = src.scaled(
-                size,
-                size,
+                render_size,
+                render_size,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            x = (scaled.width() - size) // 2
-            y = (scaled.height() - size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
+            x = (scaled.width() - render_size) // 2
+            y = (scaled.height() - render_size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
+    # 3. Default Musical Gradient
     if not has_drawn:
-        bg_color = QColor("#2b5278" if not is_active else "#2481cc")
-        painter.fillRect(0, 0, size, size, bg_color)
+        bg_color = QColor("#2481cc" if is_active else "#2b5278")
+        painter.fillRect(0, 0, render_size, render_size, bg_color)
         painter.setPen(QColor("#ffffff"))
+        font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
+        painter.setFont(font)
         painter.drawText(target_pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
 
+    # 4. Prominent Active Equalizer Overlay Badge
     if is_active:
-        painter.setBrush(QColor(79, 174, 78, 220))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(size - 18, size - 18, 16, 16)
+        badge_size = 18 * scale
+        badge_x = render_size - badge_size - (3 * scale)
+        badge_y = render_size - badge_size - (3 * scale)
+
+        painter.setClipping(False)
+        painter.setBrush(QColor(79, 174, 78, 230))
+        painter.setPen(QPen(QColor("#ffffff"), 1 * scale))
+        painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
+
         painter.setPen(QColor("#ffffff"))
-        painter.drawText(size - 18, size - 18, 16, 16, Qt.AlignmentFlag.AlignCenter, "▶")
+        font_icon = QFont("Segoe UI Emoji", 9 * scale, QFont.Weight.Bold)
+        painter.setFont(font_icon)
+        painter.drawText(badge_x, badge_y, badge_size, badge_size, Qt.AlignmentFlag.AlignCenter, "🔊")
 
     painter.end()
+    target_pixmap.setDevicePixelRatio(scale)
     return target_pixmap
 
 
 class TrackItemWidget(QWidget):
-    """Custom Telegram-styled track list item with exclusive active playback highlighting."""
+    """Custom Telegram-styled track list item with distinct active playback card styling."""
 
     def __init__(self, track: Track, is_active: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.track = track
         self._is_active = is_active
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._init_ui()
 
     def _init_ui(self) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(14)
 
-        # Subtle row highlight ONLY for the currently playing track
+        # High-contrast highlight background ONLY for the active playing track
         if self._is_active:
             self.setStyleSheet("""
                 TrackItemWidget {
-                    background-color: #172433;
+                    background-color: #20354b;
+                    border: 1.5px solid #2481cc;
                     border-radius: 8px;
                 }
             """)
@@ -104,33 +125,50 @@ class TrackItemWidget(QWidget):
             self.setStyleSheet("""
                 TrackItemWidget {
                     background-color: transparent;
+                    border: 1.5px solid transparent;
+                    border-radius: 8px;
+                }
+                TrackItemWidget:hover {
+                    background-color: #17212b;
                 }
             """)
 
+        # 1. Cover Artwork (44x44)
         self.cover_label = QLabel()
         self.cover_label.setFixedSize(44, 44)
+        self.cover_label.setStyleSheet("background: transparent; border: none;")
         self.update_cover(self.track.cover_path)
 
+        # 2. Title & Artist
         info_layout = QVBoxLayout()
         info_layout.setSpacing(3)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        title_color = "#6ab3f3" if self._is_active else "#ffffff"
+        title_color = "#52a3ff" if self._is_active else "#ffffff"
         self.title_label = QLabel(self.track.display_title)
-        self.title_label.setStyleSheet(f"color: {title_color}; font-size: 14px; font-weight: bold; background: transparent;")
+        self.title_label.setStyleSheet(
+            f"color: {title_color}; font-size: 14px; font-weight: bold; background: transparent; border: none;"
+        )
 
+        artist_color = "#9ec6ed" if self._is_active else "#7f91a4"
         self.artist_label = QLabel(self.track.display_artist)
-        self.artist_label.setStyleSheet("color: #7f91a4; font-size: 12px; background: transparent;")
+        self.artist_label.setStyleSheet(
+            f"color: {artist_color}; font-size: 12px; background: transparent; border: none;"
+        )
 
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.artist_label)
 
+        # 3. Metadata (Duration, Size, Release Date)
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
+        duration_color = "#52a3ff" if self._is_active else "#7f91a4"
         duration_label = QLabel(self.track.formatted_duration)
-        duration_label.setStyleSheet("color: #6ab3f3; font-size: 13px; font-weight: bold; background: transparent;")
+        duration_label.setStyleSheet(
+            f"color: {duration_color}; font-size: 13px; font-weight: bold; background: transparent; border: none;"
+        )
         duration_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
         meta_text = (
@@ -138,8 +176,9 @@ class TrackItemWidget(QWidget):
             if self.track.formatted_date
             else self.track.formatted_size
         )
+        meta_color = "#8db3d6" if self._is_active else "#5d6e80"
         meta_sub_label = QLabel(meta_text)
-        meta_sub_label.setStyleSheet("color: #5d6e80; font-size: 11px; background: transparent;")
+        meta_sub_label.setStyleSheet(f"color: {meta_color}; font-size: 11px; background: transparent; border: none;")
         meta_sub_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
         meta_layout.addWidget(duration_label)
@@ -161,7 +200,10 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget holding the tracks with NO default selection highlight on right-click."""
+    """
+    List widget with custom active track card highlighting,
+    infinite scroll, and completely disabled right-click events.
+    """
 
     track_selected = Signal(Track)
     load_more_requested = Signal()
@@ -176,9 +218,10 @@ class TrackListWidget(QListWidget):
         self._has_more: bool = True
         self._is_loading_more: bool = False
 
-        # Disable default list selection box completely
+        # Disable selection and context menus completely
         self.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
 
         self.setStyleSheet("""
             QListWidget {
@@ -187,21 +230,38 @@ class TrackListWidget(QListWidget):
                 outline: none;
             }
             QListWidget::item {
-                border-bottom: 1px solid #17212b;
+                border-bottom: 1px solid #141c26;
                 background-color: transparent;
-                padding: 0px;
-                margin: 0px;
+                padding: 2px 6px;
             }
             QListWidget::item:hover {
-                background-color: #17212b;
+                background-color: transparent;
             }
             QListWidget::item:selected {
                 background-color: transparent;
             }
         """)
-        self.itemDoubleClicked.connect(self._on_item_clicked)
+
         self.itemClicked.connect(self._on_item_clicked)
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Block right-clicks entirely."""
+        if event.button() == Qt.MouseButton.RightButton:
+            event.ignore()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """Block right-clicks entirely."""
+        if event.button() == Qt.MouseButton.RightButton:
+            event.ignore()
+            return
+        super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event: Any) -> None:
+        """Block context menu entirely."""
+        event.ignore()
 
     def set_tracks(self, tracks: list[Track], has_more: bool = True) -> None:
         self._all_tracks = list(tracks)
