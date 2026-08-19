@@ -34,9 +34,11 @@ from app.ui.views.track_info_dialog import TrackInfoDialog
 
 logger = logging.getLogger("tmusic.main")
 
+
 def has_saved_telegram_session(config: AppConfig) -> bool:
     td_binlog = config.tdlib_dir / "td.binlog"
     return td_binlog.exists() and td_binlog.stat().st_size > 0
+
 
 class MainWindow(QMainWindow):
     def __init__(
@@ -73,6 +75,7 @@ class MainWindow(QMainWindow):
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
+        self._main_view.search_full_requested.connect(self._telegram.search_tracks)
 
         # Login View
         self._login_view = LoginView(self)
@@ -142,8 +145,15 @@ class MainWindow(QMainWindow):
         self._telegram.tracks_deleted.connect(self._main_view.remove_tracks)
         self._telegram.tracks_deleted.connect(self._player.remove_from_playlist)
 
+        # Connect full search results from Telegram to MainView
+        self._telegram.search_results_received.connect(self._main_view.on_full_search_results)
+
         self._telegram.load_cached_state()
         self._apply_saved_proxy()
+
+    # ------------------------------------------------------------------
+    # Private Methods
+    # ------------------------------------------------------------------
 
     def _apply_saved_proxy(self) -> None:
         proxy = self._settings.preferences.proxy
@@ -217,7 +227,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.warning("Error during service shutdown: %s", exc)
 
-        # Delete entire organization directories (now named TMusicDesktop)
+        # Delete entire organization directories
         for dir_path in (self._config.org_data_root, self._config.org_cache_root):
             if dir_path.exists():
                 try:
@@ -228,6 +238,10 @@ class MainWindow(QMainWindow):
 
         # Exit the application
         QApplication.quit()
+
+    # ------------------------------------------------------------------
+    # UI Event Handlers
+    # ------------------------------------------------------------------
 
     @Slot(int)
     def _on_volume_changed(self, volume: int) -> None:
@@ -307,6 +321,11 @@ class MainWindow(QMainWindow):
         if track:
             self._main_view.scroll_to_track(track)
 
+
+# ------------------------------------------------------------------
+# Application Entry Point
+# ------------------------------------------------------------------
+
 def main() -> int:
     config = AppConfig()
     setup_logging(config, is_dev=True)
@@ -350,6 +369,7 @@ def main() -> int:
     tdlib_adapter.close()
     logger.info("Application exited cleanly with code %d", exit_code)
     return exit_code
+
 
 if __name__ == "__main__":
     sys.exit(main())

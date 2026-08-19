@@ -199,6 +199,7 @@ class TrackListWidget(QListWidget):
 
     track_selected = Signal(Track)
     load_more_requested = Signal()
+    search_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -250,6 +251,10 @@ class TrackListWidget(QListWidget):
 
     def contextMenuEvent(self, event: Any) -> None:
         event.ignore()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def set_tracks(self, tracks: list[Track], has_more: bool = True) -> None:
         self._all_tracks = list(tracks)
@@ -354,17 +359,23 @@ class TrackListWidget(QListWidget):
 
     def filter_tracks(self, query: str) -> None:
         self._current_query = query.strip().lower()
+
         if not self._current_query:
             self._populate(self._all_tracks)
-            return
+        else:
+            filtered = [
+                t
+                for t in self._all_tracks
+                if self._current_query in t.display_title.lower()
+                or self._current_query in t.display_artist.lower()
+            ]
+            self._populate(filtered)
 
-        filtered = [
-            t
-            for t in self._all_tracks
-            if self._current_query in t.display_title.lower()
-            or self._current_query in t.display_artist.lower()
-        ]
-        self._populate(filtered)
+        self.search_requested.emit(query.strip())
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
     def _populate(self, tracks: list[Track]) -> None:
         self.clear()
@@ -390,7 +401,6 @@ class TrackListWidget(QListWidget):
             self.track_selected.emit(widget.track)
 
     def scroll_to_track(self, track_id: str) -> None:
-        """Find the item and scroll to it, centering it in the viewport."""
         if track_id not in self._track_widgets:
             return
         widget = self._track_widgets[track_id]

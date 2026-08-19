@@ -20,11 +20,9 @@ from app.telegram.service import TelegramService
 
 logger = logging.getLogger("tmusic.player.service")
 
+
 class PlayerService(QObject):
-    """
-    Audio playback engine with instant progressive streaming,
-    immediate live-to-local handover upon 100% download, and TMusicDownloads export.
-    """
+    """Audio playback engine with instant progressive streaming and local export."""
 
     track_changed = Signal(object)
     playback_state_changed = Signal(bool)
@@ -40,7 +38,7 @@ class PlayerService(QObject):
         config: AppConfig,
         telegram_service: TelegramService,
         settings_service: SettingsService,
-        cache_manager: Any,  # CacheManager
+        cache_manager: Any,
         stream_server: LocalStreamServer | None = None,
     ) -> None:
         super().__init__()
@@ -52,13 +50,11 @@ class PlayerService(QObject):
 
         self._sweep_lock = threading.Lock()
 
-        # Qt Multimedia engine
         self._player = QMediaPlayer(self)
         self._audio_output = QAudioOutput(self)
         self._player.setAudioOutput(self._audio_output)
         self._audio_output.setVolume(0.8)
 
-        # Playlist & Track Registry
         self._playlist: list[Track] = []
         self._known_tracks: dict[int, Track] = {}
         self._current_index: int = -1
@@ -66,11 +62,9 @@ class PlayerService(QObject):
         self._current_metadata: AudioMetadata = AudioMetadata()
         self._cached_paths: dict[int, str] = {}
 
-        # Smart Prefetch Trackers
         self._has_prefetched_next: bool = False
         self._last_duration_ms: int = 0
 
-        # Wire Qt Multimedia signals
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
@@ -79,11 +73,9 @@ class PlayerService(QObject):
         self._player.mediaStatusChanged.connect(self._on_media_status_changed)
         self._player.errorOccurred.connect(self._on_player_error)
 
-        # Wire Telegram download signals
         self._telegram.file_download_completed.connect(self._on_file_download_completed)
         self._telegram.file_download_progress.connect(self._on_file_download_progress)
 
-        # Startup background sweep of any leftover files
         self.sweep_and_export_internal_cache(async_mode=True)
 
     @property
@@ -273,22 +265,20 @@ class PlayerService(QObject):
         self.track_changed.emit(track)
         self.metadata_updated.emit(self._current_metadata)
 
-        # 1. Multi-Strategy Search in TMusicDownloads / Registry (Instant 0ms)
         existing_file = self._find_existing_download_on_disk(track)
         if existing_file:
             self._cached_paths[track.file_id] = str(existing_file)
             self._settings.register_downloaded_track(track.id, track.file_id, str(existing_file))
             self._telegram.register_downloaded_path(track.file_id, str(existing_file))
-            logger.info("⚡ Instant play from local TMusicDownloads: %s (0 bytes downloaded)", existing_file.name)
+            logger.info("⚡ Instant play from local TMusicDownloads: %s", existing_file.name)
             self._start_playback_source(QUrl.fromLocalFile(str(existing_file.resolve())))
             return
 
-        # 2. Start progressive live stream AND trigger background download
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
-            logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
+            logger.info("⚡ Progressive Stream starting: %s", stream_url)
             self._start_playback_source(QUrl(stream_url))
-            self._telegram.download_file(track.file_id)  # Trigger full background download!
+            self._telegram.download_file(track.file_id)
         else:
             self._telegram.download_file(track.file_id)
 
@@ -300,10 +290,6 @@ class PlayerService(QObject):
             logger.warning("Could not set player source (%s): %s", url, exc)
 
     def _switch_active_stream_to_local_file(self, local_file: Path) -> None:
-        """
-        Seamless Handover: Switch source from live HTTP stream to local completed file,
-        preserving the exact playback position without resetting to 0.
-        """
         if not local_file.exists() or local_file.stat().st_size == 0:
             return
 
@@ -313,10 +299,7 @@ class PlayerService(QObject):
             was_playing = self.is_playing
             local_url = QUrl.fromLocalFile(str(local_file.resolve()))
 
-            logger.info(
-                "🔄 Seamless Live-to-Local Switch: Handing over to '%s' at %d ms (0 interruption)",
-                local_file.name, saved_pos
-            )
+            logger.info("🔄 Seamless Live-to-Local Switch: %s at %d ms", local_file.name, saved_pos)
 
             self._player.setSource(local_url)
             if saved_pos > 0:
@@ -417,23 +400,26 @@ class PlayerService(QObject):
 
     @Slot(QMediaPlayer.Error, str)
     def _on_player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
-        logger.warning("Media player encountered error (%s): %s", error, error_string)
+        logger.warning("Media player error (%s): %s", error, error_string)
         self.error_occurred.emit(error_string)
         self.playback_state_changed.emit(False)
 
     @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
-        """
-        Instant Export & Seamless Switch:
-        1. Copy completed file to TMusicDownloads.
-        2. If track is actively streaming, seamlessly switch QMediaPlayer source to local file.
-        3. Delete redundant temp cache file immediately (with TDLib sync).
-        """
-        internal_path = Path(internal_path_str)
-        if not internal_path.exists() or internal_path.stat().st_size == 0:
+        if not internal_path_str or not internal_path_str.strip():
+            logger.warning("Empty path for file_id %d", file_id)
             return
 
-        # Safety check: skip image files (should not happen after MediaHandler fix)
+        internal_path = Path(internal_path_str)
+
+        try:
+            if not internal_path.exists() or internal_path.stat().st_size == 0:
+                logger.warning("File %s not available for file_id %d", internal_path, file_id)
+                return
+        except Exception as exc:
+            logger.warning("Cannot access %s for file_id %d: %s", internal_path, file_id, exc)
+            return
+
         if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
             return
 
@@ -469,18 +455,16 @@ class PlayerService(QObject):
                     self._settings.register_downloaded_track(track_id, file_id, str(dest_file))
                     self._telegram.register_downloaded_path(file_id, str(dest_file))
 
-                    logger.info("✅ Instantly exported and registered in TMusicDownloads: %s", dest_file.name)
+                    logger.info("✅ Exported to TMusicDownloads: %s", dest_file.name)
 
-                    # Seamless Live-to-Local Switch if actively playing this track
                     if self._current_track and self._current_track.file_id == file_id:
                         self._switch_active_stream_to_local_file(dest_file)
 
-                    # Remove the cached file from TDLib and disk via CacheManager
                     self._cache.remove_file(file_id, delete_from_tdlib=True)
-                    logger.info("🗑️ Removed cached temp file (file_id=%d) from cache and TDLib.", file_id)
+                    logger.info("🗑️ Removed cached temp file (file_id=%d)", file_id)
 
         except Exception as exc:
-            logger.warning("Could not export audio to %s: %s", dest_file, exc)
+            logger.warning("Could not export to %s: %s", dest_file, exc)
             self._cached_paths[file_id] = str(internal_path)
 
         if self._current_track and self._current_track.file_id == file_id:
@@ -499,5 +483,5 @@ class PlayerService(QObject):
     @Slot(QMediaPlayer.MediaStatus)
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            logger.info("Track reached end. Transitioning to next...")
+            logger.info("Track ended. Next...")
             self.play_next()

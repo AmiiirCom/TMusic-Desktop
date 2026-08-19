@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from app.config import AppConfig
 from app.core.keywords import is_music_title
@@ -21,6 +21,7 @@ from app.telegram.worker import TDLibWorker
 
 logger = logging.getLogger("tmusic.telegram.service")
 
+
 @dataclass(slots=True)
 class ChatTrackPaginationState:
     chat_id: int
@@ -28,6 +29,7 @@ class ChatTrackPaginationState:
     next_from_message_id: int = 0
     is_loading: bool = False
     has_more: bool = True
+
 
 class TelegramService(QObject):
     """Event-Driven Telegram service with direct header byte inspection and real-time updates."""
@@ -50,6 +52,8 @@ class TelegramService(QObject):
     file_download_completed = Signal(int, str)
     network_traffic_received = Signal(int, int)
 
+    search_results_received = Signal(object, list, bool)
+
     def __init__(
         self,
         config: AppConfig,
@@ -68,7 +72,6 @@ class TelegramService(QObject):
         self._current_user: TelegramUser | None = None
         self._avatar_file_id: int = 0
 
-        # 1. Initialize Event Handlers
         self._auth = AuthHandler(
             config=self._config,
             adapter=self._adapter,
@@ -100,9 +103,9 @@ class TelegramService(QObject):
             on_lazy_chunk_appended=self.tracks_appended.emit,
             on_delta_tracks_prepended=self.tracks_prepended.emit,
             on_tracks_deleted=self.tracks_deleted.emit,
+            on_search_results=self.search_results_received.emit,
         )
 
-        # 2. Network Stats Poller Timer
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
@@ -151,7 +154,6 @@ class TelegramService(QObject):
         self._media.register_completed_path(file_id, path)
 
     def get_file_header_bytes(self, file_id: int, size: int = 131072) -> bytes | None:
-        """Fetch initial header bytes from TDLib cache to parse embedded ID3 lyrics and tags."""
         if not self._adapter.is_loaded:
             return None
         res = self._adapter.request_sync({
@@ -192,14 +194,12 @@ class TelegramService(QObject):
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
 
-        # A. Network Stats
         if extra == "periodic_net_stats" and update_type == "networkStatistics":
             total_rx = sum(e.get("received_bytes", 0) for e in update.get("entries", []))
             total_tx = sum(e.get("sent_bytes", 0) for e in update.get("entries", []))
             self.network_traffic_received.emit(total_rx, total_tx)
             return
 
-        # B. Track Search Responses
         if isinstance(extra, str) and extra.startswith("load_tracks_"):
             parts = extra.split("_")
             chat_id = int(parts[2])
@@ -211,18 +211,45 @@ class TelegramService(QObject):
             elif update_type == "error" and is_initial:
                 self.tracks_loaded.emit(chat_id, [], False)
             return
+        
+        if isinstance(extra, str) and extra.startswith("search_tracks_"):
+            if update_type in ("foundChatMessages", "messages"):
+                parts = extra.split("_")
+                if len(parts) >= 3:
+                    try:
+                        chat_id = int(parts[2])
+                    except ValueError:
+                        logger.warning("Invalid chat_id in extra: %s", extra)
+                        return
 
-        # C. Chat Pagination
+                    messages = update.get("messages", [])
+                    next_from_id = update.get("next_from_message_id", 0)
+
+                    # Process the page
+                    self._tracks.process_search_page(chat_id, messages, next_from_id, 100, extra)
+
+            elif update_type == "error":
+                # Try to extract chat_id from extra
+                parts = extra.split("_")
+                if len(parts) >= 3:
+                    try:
+                        chat_id = int(parts[2])
+                        logger.warning("Search error for chat %d: %s", chat_id, update.get("message", ""))
+                        # Clean up search state on error
+                        if chat_id in self._tracks._search_states:
+                            del self._tracks._search_states[chat_id]
+                    except ValueError:
+                        pass
+            return
+
         if extra in ("load_main_chats", "load_archive_chats"):
             self._chats.handle_pagination_response(extra, update_type)
             return
 
-        # D. Supergroup Ownership Queries
         if isinstance(extra, str) and extra.startswith("check_supergroup_") and update_type == "supergroup":
             self._chats.process_supergroup_update(update)
             return
 
-        # E. PURE REAL-TIME EVENT STREAM
         match update_type:
             case "updateAuthorizationState":
                 self._auth.process_update(update.get("authorization_state", {}))
@@ -322,20 +349,17 @@ class TelegramService(QObject):
         self._chats.start_chat_sync()
 
     def _on_auth_closed(self) -> None:
-        """Handle TDLib authorization closed state without auto-recreate."""
         logger.info("TDLib authorization closed (session terminated remotely).")
         self._net_timer.stop()
         if self._worker:
             self._worker.stop()
             self._worker = None
 
-        # Close the adapter to release resources, but do NOT recreate it.
         try:
             self._adapter.close()
         except Exception as exc:
             logger.debug("Error closing adapter: %s", exc)
 
-        # Emit state change so MainWindow can react
         self.auth_state_changed.emit(AuthState.CLOSED.value)
 
     def _extract_user(self, user_obj: dict[str, Any], is_self: bool = False) -> None:
@@ -410,7 +434,9 @@ class TelegramService(QObject):
 
         self.user_loaded.emit(user)
 
-    # --- Public Methods ---
+    # ------------------------------------------------------------------
+    # Public Commands
+    # ------------------------------------------------------------------
 
     def send_phone_number(self, phone_number: str) -> None:
         self._auth.send_phone_number(phone_number)
@@ -436,8 +462,17 @@ class TelegramService(QObject):
         self._tracks.load_chat_tracks(chat_id, reset=reset, chunk_size=chunk_size)
 
     def load_more_tracks(self, chat_id: int) -> None:
-        """Load the next chunk of tracks for the given chat."""
         self._tracks.load_chat_tracks(chat_id, reset=False)
+
+    @Slot(str, str)
+    def search_tracks(self, chat_id_str: str, query: str) -> None:
+        try:
+            chat_id = int(chat_id_str)
+        except ValueError:
+            logger.error("Invalid chat_id: %s", chat_id_str)
+            return
+        logger.info("Search requested for chat %d, query='%s'", chat_id, query)
+        self._tracks.search_tracks(chat_id, query)
 
     def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
         self._adapter.send({

@@ -16,10 +16,22 @@ class ChatTrackPaginationState:
     next_from_message_id: int = 0
     is_loading: bool = False
     has_more: bool = True
+    search_query: str = ""
+
+
+@dataclass(slots=True)
+class SearchState:
+    chat_id: int
+    query: str
+    accumulated_tracks: list[Track]
+    next_from_message_id: int
+    is_complete: bool
+    extra_id: str
+    limit: int = 100
 
 
 class TrackHandler:
-    """Event-driven audio track manager responding in real-time to TDLib updates."""
+    """Event-driven audio track manager with optimized search and pagination."""
 
     def __init__(
         self,
@@ -30,6 +42,7 @@ class TrackHandler:
         on_lazy_chunk_appended: Callable[[int, list[Track], bool], None],
         on_delta_tracks_prepended: Callable[[int, list[Track]], None],
         on_tracks_deleted: Callable[[int, list[str]], None],
+        on_search_results: Callable[[int, list[Track], bool], None],
     ) -> None:
         self._adapter = adapter
         self._request_cover_download = request_cover_download
@@ -38,8 +51,14 @@ class TrackHandler:
         self._on_lazy_chunk_appended = on_lazy_chunk_appended
         self._on_delta_tracks_prepended = on_delta_tracks_prepended
         self._on_tracks_deleted = on_tracks_deleted
+        self._on_search_results = on_search_results
 
         self._track_pagination: dict[int, ChatTrackPaginationState] = {}
+        self._search_states: dict[int, SearchState] = {}
+
+    # ------------------------------------------------------------------
+    # Normal Pagination
+    # ------------------------------------------------------------------
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
         if reset or chat_id not in self._track_pagination:
@@ -66,8 +85,117 @@ class TrackHandler:
             "@extra": f"load_tracks_{chat_id}_{is_initial_str}",
         })
 
+    # ------------------------------------------------------------------
+    # Full Search with Pagination
+    # ------------------------------------------------------------------
+
+    def search_tracks(self, chat_id: int, query: str, limit: int = 100) -> None:
+        # Ensure pagination state exists
+        state = self._track_pagination.get(chat_id)
+        if not state:
+            state = ChatTrackPaginationState(chat_id=chat_id)
+            self._track_pagination[chat_id] = state
+
+        state.search_query = query.strip()
+
+        if not query.strip():
+            return
+
+        # Generate unique extra ID for this search
+        extra_id = f"search_tracks_{chat_id}_{id(self)}_{len(self._search_states)}"
+
+        # Create or reset search state
+        self._search_states[chat_id] = SearchState(
+            chat_id=chat_id,
+            query=query,
+            accumulated_tracks=[],
+            next_from_message_id=0,
+            is_complete=False,
+            extra_id=extra_id,
+            limit=limit,
+        )
+
+        logger.info("Starting search for chat %d: query='%s', extra='%s'", chat_id, query, extra_id)
+        self._send_search_request(chat_id, query, 0, extra_id, limit)
+
+    def _send_search_request(self, chat_id: int, query: str, from_msg_id: int, extra_id: str, limit: int) -> None:
+        self._adapter.send({
+            "@type": "searchChatMessages",
+            "chat_id": chat_id,
+            "query": query,
+            "from_message_id": from_msg_id,
+            "offset": 0,
+            "limit": limit,
+            "filter": {"@type": "searchMessagesFilterAudio"},
+            "@extra": extra_id,
+        })
+        logger.debug("Search page request: chat=%d, from=%d, extra=%s", chat_id, from_msg_id, extra_id)
+
+    # ------------------------------------------------------------------
+    # Response Processing
+    # ------------------------------------------------------------------
+
+    def process_search_response(
+        self, chat_id: int, messages: list[dict[str, Any]], next_from_id: int, is_initial: bool
+    ) -> None:
+        state = self._track_pagination.get(chat_id)
+        if not state:
+            state = ChatTrackPaginationState(chat_id=chat_id)
+            self._track_pagination[chat_id] = state
+
+        state.is_loading = False
+        state.next_from_message_id = next_from_id
+        state.has_more = (next_from_id != 0) and (len(messages) > 0)
+
+        chunk_tracks = self._parse_message_tracks(chat_id, messages)
+
+        if is_initial:
+            state.tracks = list(chunk_tracks)
+            self._on_initial_chunk_loaded(chat_id, state.tracks, state.has_more)
+        else:
+            state.tracks.extend(chunk_tracks)
+            self._on_lazy_chunk_appended(chat_id, chunk_tracks, state.has_more)
+
+    def process_search_page(self, chat_id: int, messages: list[dict[str, Any]], next_from_id: int, limit: int, extra: str) -> None:
+        """Process a single page of search results."""
+        search_state = self._search_states.get(chat_id)
+
+        if not search_state:
+            logger.warning("No search state for chat %d (extra: %s)", chat_id, extra)
+            return
+
+        if search_state.extra_id != extra:
+            logger.debug("Stale search response: expected %s, got %s", search_state.extra_id, extra)
+            return
+
+        # Parse tracks from this page
+        chunk_tracks = self._parse_message_tracks(chat_id, messages)
+        search_state.accumulated_tracks.extend(chunk_tracks)
+
+        logger.debug("Page processed: chat=%d, got %d tracks, total=%d, next_from=%d",
+                     chat_id, len(chunk_tracks), len(search_state.accumulated_tracks), next_from_id)
+
+        # Check if more pages exist
+        if next_from_id != 0 and len(messages) > 0:
+            # Request next page with same extra_id
+            self._send_search_request(chat_id, search_state.query, next_from_id, extra, limit)
+        else:
+            # All pages received - emit final results
+            search_state.is_complete = True
+            final_tracks = search_state.accumulated_tracks
+            logger.info("Search complete for chat %d: %d total tracks", chat_id, len(final_tracks))
+
+            # Emit results via callback
+            self._on_search_results(chat_id, final_tracks, False)
+
+            # Clean up search state
+            del self._search_states[chat_id]
+
+    # ------------------------------------------------------------------
+    # Real-time Event Processing
+    # ------------------------------------------------------------------
+
     def process_new_message(self, message: dict[str, Any]) -> None:
-        """Real-time event: React immediately when a new audio track is posted in Telegram."""
         chat_id = message.get("chat_id", 0)
         state = self._track_pagination.get(chat_id)
         if not state:
@@ -81,12 +209,11 @@ class TrackHandler:
         existing_ids = {t.id for t in state.tracks}
 
         if new_track.id not in existing_ids:
-            logger.info("⚡ Live Push Event: New track posted in chat %d -> %s", chat_id, new_track.display_title)
+            logger.info("⚡ Live Push: New track in chat %d: %s", chat_id, new_track.display_title)
             state.tracks.insert(0, new_track)
             self._on_delta_tracks_prepended(chat_id, [new_track])
 
     def process_delete_messages(self, chat_id: int, message_ids: list[int]) -> None:
-        """Real-time event: React immediately when tracks are deleted in Telegram."""
         state = self._track_pagination.get(chat_id)
         if not state or not state.tracks:
             return
@@ -96,8 +223,12 @@ class TrackHandler:
         state.tracks = [t for t in state.tracks if t.id not in del_track_ids]
 
         if len(state.tracks) < original_count:
-            logger.info("🗑️ Live Push Event: Removed %d deleted tracks from chat %d", original_count - len(state.tracks), chat_id)
+            logger.info("🗑️ Removed %d deleted tracks from chat %d", original_count - len(state.tracks), chat_id)
             self._on_tracks_deleted(chat_id, list(del_track_ids))
+
+    # ------------------------------------------------------------------
+    # Track Parsing
+    # ------------------------------------------------------------------
 
     def _parse_message_tracks(self, chat_id: int, messages: list[dict[str, Any]]) -> list[Track]:
         chunk_tracks: list[Track] = []
@@ -212,25 +343,5 @@ class TrackHandler:
                         cover_path=cover_path,
                     )
                     chunk_tracks.append(track)
+
         return chunk_tracks
-
-    def process_search_response(
-        self, chat_id: int, messages: list[dict[str, Any]], next_from_id: int, is_initial: bool
-    ) -> None:
-        state = self._track_pagination.get(chat_id)
-        if not state:
-            state = ChatTrackPaginationState(chat_id=chat_id)
-            self._track_pagination[chat_id] = state
-
-        state.is_loading = False
-        state.next_from_message_id = next_from_id
-        state.has_more = (next_from_id != 0) and (len(messages) > 0)
-
-        chunk_tracks = self._parse_message_tracks(chat_id, messages)
-
-        if is_initial:
-            state.tracks = list(chunk_tracks)
-            self._on_initial_chunk_loaded(chat_id, state.tracks, state.has_more)
-        else:
-            state.tracks.extend(chunk_tracks)
-            self._on_lazy_chunk_appended(chat_id, chunk_tracks, state.has_more)

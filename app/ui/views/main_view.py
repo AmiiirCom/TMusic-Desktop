@@ -1,5 +1,5 @@
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -7,11 +7,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QProgressBar,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
+import logging
 
 from app.config import AppConfig
 from app.models.chat import OwnedChat
@@ -20,6 +22,9 @@ from app.models.user import TelegramUser
 from app.ui.components.chat_list_widget import OwnedChatListWidget
 from app.ui.components.player_bar import PlayerBar
 from app.ui.components.track_list_widget import TrackListWidget
+
+logger = logging.getLogger("tmusic.ui.mainview")
+
 
 def create_circular_avatar_pixmap(
     photo_path: str | None,
@@ -86,20 +91,33 @@ def create_circular_avatar_pixmap(
     pixmap.setDevicePixelRatio(scale)
     return pixmap
 
+
 class MainView(QWidget):
-    """Telegram Desktop styled main dashboard view with live deletions and delta sync."""
+    """Telegram Desktop styled main dashboard view with optimized search and scroll."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
     load_more_tracks_requested = Signal(object)
     settings_requested = Signal()
+    search_full_requested = Signal(str, str)  # (chat_id as str, query)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config = config
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._active_chat: OwnedChat | None = None
+        self._original_tracks: list[Track] = []
+        self._is_searching = False
+        self._search_query = ""
         self._init_ui()
+
+        # Search debounce timer (300ms)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(300)
+        self._search_timer.timeout.connect(self._perform_full_search)
+
+        self.search_input.textChanged.connect(self._on_search_text_changed)
 
     def _init_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -108,7 +126,7 @@ class MainView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        # 1. Sidebar Container (Right side in RTL)
+        # Sidebar
         sidebar = QWidget(self)
         sidebar.setFixedWidth(300)
         sidebar.setStyleSheet("background-color: #17212b; border-left: 1px solid #0e1621;")
@@ -116,7 +134,6 @@ class MainView(QWidget):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        # User Profile Header
         user_header = QFrame(sidebar)
         user_header.setObjectName("userHeader")
         user_header.setFixedHeight(68)
@@ -178,18 +195,15 @@ class MainView(QWidget):
         user_layout.addWidget(btn_settings)
         sidebar_layout.addWidget(user_header)
 
-        # Section title
         section_label = QLabel("  کانال‌های موزیک شما")
         section_label.setFixedHeight(36)
         section_label.setStyleSheet("color: #6ab3f3; font-size: 12px; font-weight: bold;")
         sidebar_layout.addWidget(section_label)
 
-        # Owned Chat List
         self.chat_list = OwnedChatListWidget(sidebar)
         self.chat_list.chat_selected.connect(self._on_internal_chat_selected)
         sidebar_layout.addWidget(self.chat_list, stretch=1)
 
-        # Sidebar Bottom: Live Network Stats Bar
         stats_bar = QFrame(sidebar)
         stats_bar.setFixedHeight(32)
         stats_bar.setStyleSheet("background-color: #121921; padding: 4px 10px; border-top: 1px solid #0e1621;")
@@ -201,14 +215,13 @@ class MainView(QWidget):
         stats_layout.addWidget(self.net_stats_label)
         sidebar_layout.addWidget(stats_bar)
 
-        # 2. Main Content Area
+        # Main content
         content_area = QWidget(self)
         content_area.setStyleSheet("background-color: #0e1621;")
         content_layout = QVBoxLayout(content_area)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # Top Header Bar
         self.chat_header = QFrame(content_area)
         self.chat_header.setFixedHeight(68)
         self.chat_header.setStyleSheet("background-color: #17212b; border-bottom: 1px solid #0e1621;")
@@ -233,7 +246,6 @@ class MainView(QWidget):
             }
             QLineEdit:focus { border-color: #2481cc; }
         """)
-        self.search_input.textChanged.connect(self._on_search_text_changed)
         self.search_input.hide()
 
         header_layout.addWidget(self.selected_chat_title)
@@ -241,24 +253,52 @@ class MainView(QWidget):
         header_layout.addWidget(self.search_input)
         content_layout.addWidget(self.chat_header)
 
-        # Content Stack
         self.content_stack = QStackedWidget(content_area)
 
         # Page 0: Placeholder
-        placeholder_page = QWidget()
-        ph_layout = QVBoxLayout(placeholder_page)
+        self.placeholder_page = QWidget()
+        ph_layout = QVBoxLayout(self.placeholder_page)
         ph_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.placeholder_msg = QLabel("لطفاً یک کانال یا گروه از سایدبار انتخاب کنید تا موزیک‌های آن بارگذاری شوند 🎵")
         self.placeholder_msg.setStyleSheet("color: #7f91a4; font-size: 14px;")
         ph_layout.addWidget(self.placeholder_msg)
+        self.content_stack.addWidget(self.placeholder_page)
 
         # Page 1: Track List
         self.track_list = TrackListWidget(content_area)
         self.track_list.track_selected.connect(self.track_selected.emit)
         self.track_list.load_more_requested.connect(self._on_load_more_tracks)
-
-        self.content_stack.addWidget(placeholder_page)
+        self.track_list.search_requested.connect(self._on_search_requested)
         self.content_stack.addWidget(self.track_list)
+
+        # Page 2: Search Loading (indeterminate progress bar)
+        self.search_loading_page = QWidget()
+        loading_layout = QVBoxLayout(self.search_loading_page)
+        loading_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_layout.setSpacing(16)
+
+        self.search_progress = QProgressBar()
+        self.search_progress.setRange(0, 0)  # Indeterminate mode
+        self.search_progress.setFixedWidth(200)
+        self.search_progress.setFixedHeight(4)
+        self.search_progress.setStyleSheet("""
+            QProgressBar {
+                background-color: #242f3d;
+                border: none;
+                border-radius: 2px;
+            }
+            QProgressBar::chunk {
+                background-color: #2481cc;
+                border-radius: 2px;
+            }
+        """)
+
+        self.search_loading_label = QLabel("🔍 در حال جستجو...")
+        self.search_loading_label.setStyleSheet("color: #7f91a4; font-size: 14px;")
+
+        loading_layout.addWidget(self.search_progress)
+        loading_layout.addWidget(self.search_loading_label)
+        self.content_stack.addWidget(self.search_loading_page)
 
         content_layout.addWidget(self.content_stack)
 
@@ -268,9 +308,12 @@ class MainView(QWidget):
 
         root_layout.addWidget(splitter, stretch=1)
 
-        # 3. Bottom Player Bar
         self.player_bar = PlayerBar(self._config, self)
         root_layout.addWidget(self.player_bar)
+
+    # ------------------------------------------------------------------
+    # Public Methods
+    # ------------------------------------------------------------------
 
     def set_user(self, user: TelegramUser) -> None:
         self.user_name_label.setText(user.full_name)
@@ -293,17 +336,79 @@ class MainView(QWidget):
         self.net_stats_label.setText(f"⚡ {speed_str} | دیتای سشن: {total_str}")
 
     def scroll_to_track(self, track: Track) -> None:
-        """Scroll the track list to bring the given track into view."""
         self.track_list.scroll_to_track(track.id)
+
+    def on_full_search_results(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
+        """Handle full search results from TelegramService."""
+        logger.info("on_full_search_results: chat_id=%d, tracks_count=%d, active_chat_id=%s",
+                    chat_id, len(tracks), self._active_chat.id if self._active_chat else None)
+
+        if not self._active_chat:
+            logger.warning("No active chat, ignoring search results")
+            return
+
+        if self._active_chat.id != chat_id:
+            logger.warning("Search results for wrong chat: expected %d, got %d", self._active_chat.id, chat_id)
+            return
+
+        # Store original tracks if first search
+        if not self._is_searching:
+            self._original_tracks = list(self.track_list._all_tracks)
+            self._is_searching = True
+
+        if not tracks:
+            logger.info("Search returned 0 results, showing placeholder")
+            self.placeholder_msg.setText("🔍 نتیجه‌ای برای جستجوی شما یافت نشد!")
+            self.content_stack.setCurrentIndex(0)
+        else:
+            logger.info("Search returned %d results, updating track list", len(tracks))
+            self.track_list.set_tracks(tracks, has_more=False)
+            self.content_stack.setCurrentIndex(1)
+
+            # Re-apply local filter if there's an active query
+            current_query = self.search_input.text().strip()
+            if current_query:
+                self.track_list.filter_tracks(current_query)
+
+            # If there's an active track, scroll to it
+            if self.player_bar._current_track:
+                self.scroll_to_track(self.player_bar._current_track)
+
+    def restore_normal_tracks(self) -> None:
+        """Restore the original track list (before search)."""
+        logger.info("Restoring normal tracks, is_searching=%s, original_tracks_count=%d",
+                    self._is_searching, len(self._original_tracks))
+
+        if self._is_searching and self._original_tracks:
+            self.track_list.set_tracks(self._original_tracks, has_more=True)
+            self.content_stack.setCurrentIndex(1)
+            self._is_searching = False
+            self._original_tracks = []
+
+            # Scroll to active track if exists
+            if self.player_bar._current_track:
+                self.scroll_to_track(self.player_bar._current_track)
+        else:
+            # If no original tracks, just show placeholder
+            if not self._original_tracks:
+                self.placeholder_msg.setText("هیچ موزیکی در این کانال یافت نشد! 📂")
+                self.content_stack.setCurrentIndex(0)
+
+    # ------------------------------------------------------------------
+    # Internal Slots
+    # ------------------------------------------------------------------
 
     def _on_internal_chat_selected(self, chat: OwnedChat) -> None:
         self._active_chat = chat
         self.selected_chat_title.setText(f"{chat.title} ({chat.type_display})")
         self.search_input.clear()
         self.search_input.show()
+        self._search_timer.stop()
         self.placeholder_msg.setText("در حال دریافت ترک‌ها... 🔄")
         self.content_stack.setCurrentIndex(0)
         self.chat_selected.emit(chat)
+        self._is_searching = False
+        self._original_tracks = []
 
     def set_initial_tracks(self, tracks: list[Track], has_more: bool) -> None:
         if not tracks:
@@ -313,20 +418,49 @@ class MainView(QWidget):
 
         self.track_list.set_tracks(tracks, has_more=has_more)
         self.content_stack.setCurrentIndex(1)
+        self._original_tracks = list(tracks)
+        self._is_searching = False
+        self._search_query = ""
+
+        if self.player_bar._current_track:
+            self.scroll_to_track(self.player_bar._current_track)
 
     def append_tracks(self, new_tracks: list[Track], has_more: bool) -> None:
         self.track_list.append_tracks(new_tracks, has_more=has_more)
+        if not self._is_searching:
+            self._original_tracks.extend(new_tracks)
 
     def prepend_tracks(self, new_tracks: list[Track]) -> None:
         self.track_list.prepend_tracks(new_tracks)
+        if not self._is_searching:
+            self._original_tracks = new_tracks + self._original_tracks
 
     def remove_tracks(self, chat_id: int, deleted_track_ids: list[str]) -> None:
         if self._active_chat and self._active_chat.id == chat_id:
             self.track_list.remove_tracks(deleted_track_ids)
+            if not self._is_searching:
+                del_set = set(deleted_track_ids)
+                self._original_tracks = [t for t in self._original_tracks if t.id not in del_set]
 
     def _on_load_more_tracks(self) -> None:
         if self._active_chat:
             self.load_more_tracks_requested.emit(self._active_chat.id)
 
     def _on_search_text_changed(self, text: str) -> None:
-        self.track_list.filter_tracks(text)
+        self._search_timer.stop()
+        if not text.strip():
+            self.restore_normal_tracks()
+        else:
+            # Show loading indicator immediately (will be replaced by results later)
+            self.content_stack.setCurrentIndex(2)
+            self._search_timer.start()
+
+    def _on_search_requested(self, query: str) -> None:
+        if not query:
+            self.restore_normal_tracks()
+
+    def _perform_full_search(self) -> None:
+        query = self.search_input.text().strip()
+        if self._active_chat and query:
+            logger.info("Performing full search for chat %d, query='%s'", self._active_chat.id, query)
+            self.search_full_requested.emit(str(self._active_chat.id), query)
