@@ -31,10 +31,11 @@ class UserPreferences:
     proxy: ProxySettings = field(default_factory=ProxySettings)
     cached_music_chats: list[dict[str, Any]] = field(default_factory=list)
     cached_user_profile: dict[str, Any] = field(default_factory=dict)
+    downloaded_tracks_map: dict[str, str] = field(default_factory=dict)  # track_id/file_id -> local_path
 
 
 class SettingsService:
-    """Manages secure encrypted user settings, cached chats, and avatar profile."""
+    """Manages secure encrypted user settings, cached chats, and persistent downloaded tracks registry."""
 
     def __init__(self, data_dir: Path, crypto: CryptoManager) -> None:
         self._data_dir = data_dir
@@ -48,7 +49,6 @@ class SettingsService:
         return self._preferences
 
     def load(self) -> None:
-        """Load and decrypt settings from disk."""
         data = self._crypto.load_encrypted_json(self._settings_file)
         if not data:
             return
@@ -72,14 +72,14 @@ class SettingsService:
                 last_chat_id=data.get("last_chat_id", 0),
                 proxy=proxy,
                 cached_music_chats=data.get("cached_music_chats", []),
-                cached_user_profile=data.get("cached_user_profile", []),
+                cached_user_profile=data.get("cached_user_profile", {}),
+                downloaded_tracks_map=data.get("downloaded_tracks_map", {}),
             )
             logger.info("Loaded secure encrypted preferences successfully.")
         except Exception as exc:
             logger.warning("Error parsing settings data: %s", exc)
 
     def save(self) -> None:
-        """Encrypt and persist current settings to disk."""
         payload: dict[str, Any] = {
             "volume": self._preferences.volume,
             "is_muted": self._preferences.is_muted,
@@ -89,8 +89,25 @@ class SettingsService:
             "proxy": asdict(self._preferences.proxy),
             "cached_music_chats": self._preferences.cached_music_chats,
             "cached_user_profile": self._preferences.cached_user_profile,
+            "downloaded_tracks_map": self._preferences.downloaded_tracks_map,
         }
         self._crypto.save_encrypted_json(self._settings_file, payload)
+
+    def register_downloaded_track(self, track_id: str, file_id: int, local_path: str) -> None:
+        """Persist track path so it's permanently recognized across app restarts."""
+        self._preferences.downloaded_tracks_map[track_id] = local_path
+        self._preferences.downloaded_tracks_map[str(file_id)] = local_path
+        self.save()
+
+    def get_downloaded_track_path(self, track_id: str, file_id: int) -> str | None:
+        """Retrieve verified path from persistent registry."""
+        path_str = (
+            self._preferences.downloaded_tracks_map.get(track_id)
+            or self._preferences.downloaded_tracks_map.get(str(file_id))
+        )
+        if path_str and Path(path_str).exists() and Path(path_str).stat().st_size > 0:
+            return path_str
+        return None
 
     def set_cached_music_chats(self, chats: list[OwnedChat]) -> None:
         self._preferences.cached_music_chats = [
@@ -119,7 +136,6 @@ class SettingsService:
         ]
 
     def set_cached_user_profile(self, user: TelegramUser) -> None:
-        """Cache user profile metadata and local avatar path."""
         minithumb_str = (
             base64.b64encode(user.minithumb_data).decode("ascii")
             if user.minithumb_data
@@ -139,7 +155,6 @@ class SettingsService:
         self.save()
 
     def get_cached_user_profile(self) -> TelegramUser | None:
-        """Retrieve user profile from secure local cache."""
         data = self._preferences.cached_user_profile
         if not data or "id" not in data:
             return None

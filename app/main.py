@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
         self._player.duration_changed.connect(player_bar.set_duration)
         self._player.metadata_updated.connect(player_bar.update_metadata)
 
-        # Precision Network Meter & Cover Integration
+        # Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
@@ -129,7 +129,6 @@ class MainWindow(QMainWindow):
         self._tray.show_window_requested.connect(self._restore_window)
         self._tray.quit_requested.connect(self._quit_application)
 
-        # Connect Telegram Service signals
         self._telegram.auth_state_changed.connect(self._on_auth_state_changed)
         self._telegram.auth_error.connect(self._login_view.show_error)
         self._telegram.connection_state_changed.connect(self._login_view.set_connection_status)
@@ -306,7 +305,7 @@ def main() -> int:
     stream_server = LocalStreamServer(tdlib_adapter)
     telegram_service = TelegramService(config, tdlib_adapter, settings_service)
 
-    player_service = PlayerService(config, telegram_service, stream_server)
+    player_service = PlayerService(config, telegram_service, settings_service, stream_server)
     cache_service = CacheService(config)
     network_meter = NetworkMeter()
 

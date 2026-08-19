@@ -14,6 +14,7 @@ from app.core.metadata import (
 from app.models.track import Track
 from app.network.stream_server import LocalStreamServer
 from app.platform.paths import has_sufficient_disk_space, sanitize_filename
+from app.settings.service import SettingsService
 from app.telegram.service import TelegramService
 
 logger = logging.getLogger("tmusic.player.service")
@@ -21,8 +22,8 @@ logger = logging.getLogger("tmusic.player.service")
 
 class PlayerService(QObject):
     """
-    Audio playback engine with immediate export to TMusicDownloads upon download completion,
-    non-blocking startup cache migration, and gapless prefetching.
+    Audio playback engine with persistent download registry,
+    multi-strategy disk matching (zero re-downloads), and gapless prefetching.
     """
 
     track_changed = Signal(object)
@@ -38,14 +39,15 @@ class PlayerService(QObject):
         self,
         config: AppConfig,
         telegram_service: TelegramService,
+        settings_service: SettingsService,
         stream_server: LocalStreamServer | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._telegram = telegram_service
+        self._settings = settings_service
         self._stream_server = stream_server
 
-        # Concurrency lock for background sweeper
         self._sweep_lock = threading.Lock()
 
         # Qt Multimedia engine
@@ -79,7 +81,7 @@ class PlayerService(QObject):
         self._telegram.file_download_completed.connect(self._on_file_download_completed)
         self._telegram.file_download_progress.connect(self._on_file_download_progress)
 
-        # Launch non-blocking background migration ONLY on startup
+        # Launch non-blocking background migration on startup
         self.sweep_and_export_internal_cache(async_mode=True)
 
     @property
@@ -168,6 +170,51 @@ class PlayerService(QObject):
         clean_title = sanitize_filename(f"{track.display_artist} - {track.display_title}{ext}")
         return self._config.downloads_dir / clean_title
 
+    def _find_existing_download_on_disk(self, track: Track) -> Path | None:
+        """
+        Multi-Strategy Search in TMusicDownloads:
+        1. Check persistent encrypted registry (SettingsService)
+        2. Check memory cache (_cached_paths)
+        3. Check clean name (Artist - Title.ext)
+        4. Check raw Telegram filename (file_name)
+        5. Check title name (Title.ext)
+        6. Check exact byte-size match in downloads folder
+        """
+        # 1. Persistent encrypted registry
+        persisted_path = self._settings.get_downloaded_track_path(track.id, track.file_id)
+        if persisted_path:
+            p = Path(persisted_path)
+            if p.exists() and p.stat().st_size > 0:
+                return p
+
+        # 2. In-memory cache
+        mem_cached = self._cached_paths.get(track.file_id)
+        if mem_cached:
+            p = Path(mem_cached)
+            if p.exists() and p.stat().st_size > 0:
+                return p
+
+        # 3. Check candidate filenames in TMusicDownloads
+        ext = Path(track.file_name).suffix or ".mp3"
+        candidates = [
+            self._get_clean_download_destination(track),
+            self._config.downloads_dir / sanitize_filename(track.file_name),
+            self._config.downloads_dir / sanitize_filename(f"{track.display_title}{ext}"),
+            self._config.downloads_dir / sanitize_filename(f"{track.title}{ext}"),
+        ]
+
+        for cand in candidates:
+            if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
+                return cand
+
+        # 4. Check matching file by exact size in TMusicDownloads
+        if track.size_bytes > 0 and self._config.downloads_dir.exists():
+            for f in self._config.downloads_dir.glob("*"):
+                if f.is_file() and f.stat().st_size == track.size_bytes:
+                    return f
+
+        return None
+
     def _resolve_clean_name_for_file(self, file_path: Path) -> str:
         ext = file_path.suffix or ".mp3"
         try:
@@ -184,7 +231,6 @@ class PlayerService(QObject):
         return sanitize_filename(file_path.name)
 
     def sweep_and_export_internal_cache(self, async_mode: bool = True) -> None:
-        """Scan internal cache (data/cache) and migrate completed files to TMusicDownloads."""
         if async_mode:
             thread = threading.Thread(
                 target=self._run_sweep_worker,
@@ -196,7 +242,6 @@ class PlayerService(QObject):
             self._run_sweep_worker()
 
     def _run_sweep_worker(self) -> None:
-        """Thread-safe background sweeper worker."""
         if not self._sweep_lock.acquire(blocking=False):
             return
 
@@ -239,23 +284,17 @@ class PlayerService(QObject):
         self.track_changed.emit(track)
         self.metadata_updated.emit(self._current_metadata)
 
-        # 1. Clean TMusicDownloads Check
-        clean_file = self._get_clean_download_destination(track)
-        if clean_file.exists() and clean_file.stat().st_size > 0:
-            self._cached_paths[track.file_id] = str(clean_file)
-            self._telegram.register_downloaded_path(track.file_id, str(clean_file))
-            logger.info("⚡ Instant play from clean TMusicDownloads: %s", clean_file)
-            self._start_playback_source(QUrl.fromLocalFile(str(clean_file.resolve())))
+        # 1. Multi-Strategy Search in TMusicDownloads / Registry
+        existing_file = self._find_existing_download_on_disk(track)
+        if existing_file:
+            self._cached_paths[track.file_id] = str(existing_file)
+            self._settings.register_downloaded_track(track.id, track.file_id, str(existing_file))
+            self._telegram.register_downloaded_path(track.file_id, str(existing_file))
+            logger.info("⚡ Instant play from local TMusicDownloads: %s (0 bytes downloaded)", existing_file.name)
+            self._start_playback_source(QUrl.fromLocalFile(str(existing_file.resolve())))
             return
 
-        # 2. Fallback Path Check
-        cached_path = self._cached_paths.get(track.file_id) or self._telegram.get_downloaded_path(track.file_id)
-        if cached_path and Path(cached_path).exists() and Path(cached_path).stat().st_size > 0:
-            logger.info("Playing from fallback cache path: %s", cached_path)
-            self._start_playback_source(QUrl.fromLocalFile(str(Path(cached_path).resolve())))
-            return
-
-        # 3. Progressive Stream
+        # 2. Progressive Stream
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
             logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
@@ -328,13 +367,10 @@ class PlayerService(QObject):
         next_idx = (self._current_index + 1) % len(self._playlist)
         next_track = self._playlist[next_idx]
 
-        clean_file = self._get_clean_download_destination(next_track)
-        if clean_file.exists() and clean_file.stat().st_size > 0:
+        if self._find_existing_download_on_disk(next_track):
             return
 
-        cached_path = self._cached_paths.get(next_track.file_id) or self._telegram.get_downloaded_path(next_track.file_id)
-        if not (cached_path and Path(cached_path).exists()):
-            self._telegram.prefetch_audio_file(next_track.file_id)
+        self._telegram.prefetch_audio_file(next_track.file_id)
 
         if next_track.cover_file_id and not next_track.cover_path:
             self._telegram.prefetch_cover_file(next_track.id, next_track.cover_file_id)
@@ -370,16 +406,10 @@ class PlayerService(QObject):
 
     @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
-        """
-        IMMEDIATE TRANSFER:
-        To be called the instant download reaches 100%. Copies to TMusicDownloads,
-        updates the stream server to point to destination file, and deletes temp file immediately.
-        """
         internal_path = Path(internal_path_str)
         if not internal_path.exists() or internal_path.stat().st_size == 0:
             return
 
-        # 1. Identify track metadata
         matching_track = self._known_tracks.get(file_id)
         if not matching_track:
             if self._current_track and self._current_track.file_id == file_id:
@@ -392,9 +422,11 @@ class PlayerService(QObject):
 
         if matching_track:
             dest_file = self._get_clean_download_destination(matching_track)
+            track_id = matching_track.id
         else:
             clean_name = self._resolve_clean_name_for_file(internal_path)
             dest_file = self._config.downloads_dir / clean_name
+            track_id = f"0_{file_id}"
 
         src_size = internal_path.stat().st_size
 
@@ -407,20 +439,19 @@ class PlayerService(QObject):
 
                 if dest_file.exists() and dest_file.stat().st_size == src_size:
                     self._cached_paths[file_id] = str(dest_file)
+                    self._settings.register_downloaded_track(track_id, file_id, str(dest_file))
                     self._telegram.register_downloaded_path(file_id, str(dest_file))
 
-                    # Tell local stream server to serve remaining stream directly from clean dest_file!
                     if self._stream_server:
                         self._stream_server.register_completed_file(file_id, str(dest_file))
 
-                    logger.info("✅ Instantly exported to TMusicDownloads: %s", dest_file.name)
+                    logger.info("✅ Instantly exported and registered in TMusicDownloads: %s", dest_file.name)
 
-                    # Delete internal temp duplicate immediately
                     try:
                         internal_path.unlink(missing_ok=True)
                         logger.info("🗑️ Immediately deleted internal cache temp file: %s", internal_path.name)
-                    except Exception as del_exc:
-                        logger.debug("Immediate unlink error for %s: %s", internal_path, del_exc)
+                    except Exception:
+                        pass
 
         except Exception as exc:
             logger.warning("Could not export audio to %s: %s", dest_file, exc)
