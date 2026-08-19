@@ -4,12 +4,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from app.config import AppConfig
 from app.core.security import CryptoManager
 from app.models.chat import OwnedChat
 from app.models.user import TelegramUser
 
 logger = logging.getLogger("tmusic.settings.service")
-
 
 @dataclass(slots=True)
 class ProxySettings:
@@ -19,7 +19,6 @@ class ProxySettings:
     port: int = 10808
     username: str = ""
     password: str = ""
-
 
 @dataclass(slots=True)
 class UserPreferences:
@@ -33,14 +32,13 @@ class UserPreferences:
     cached_user_profile: dict[str, Any] = field(default_factory=dict)
     downloaded_tracks_map: dict[str, str] = field(default_factory=dict)  # track_id/file_id -> local_path
 
-
 class SettingsService:
     """Manages secure encrypted user settings, cached chats, and persistent downloaded tracks registry."""
 
-    def __init__(self, data_dir: Path, crypto: CryptoManager) -> None:
-        self._data_dir = data_dir
+    def __init__(self, config: AppConfig, crypto: CryptoManager) -> None:
+        self._config = config
         self._crypto = crypto
-        self._settings_file = data_dir / "settings.enc"
+        self._settings_file = config.settings_file
         self._preferences = UserPreferences()
         self.load()
 

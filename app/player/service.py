@@ -20,7 +20,6 @@ from app.telegram.service import TelegramService
 
 logger = logging.getLogger("tmusic.player.service")
 
-
 class PlayerService(QObject):
     """
     Audio playback engine with instant progressive streaming,
@@ -41,12 +40,14 @@ class PlayerService(QObject):
         config: AppConfig,
         telegram_service: TelegramService,
         settings_service: SettingsService,
+        cache_manager: Any,  # CacheManager
         stream_server: LocalStreamServer | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._telegram = telegram_service
         self._settings = settings_service
+        self._cache = cache_manager
         self._stream_server = stream_server
 
         self._sweep_lock = threading.Lock()
@@ -421,13 +422,12 @@ class PlayerService(QObject):
         self.playback_state_changed.emit(False)
 
     @Slot(int, str)
-    @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
         """
         Instant Export & Seamless Switch:
         1. Copy completed file to TMusicDownloads.
         2. If track is actively streaming, seamlessly switch QMediaPlayer source to local file.
-        3. Delete redundant temp cache file immediately.
+        3. Delete redundant temp cache file immediately (with TDLib sync).
         """
         internal_path = Path(internal_path_str)
         if not internal_path.exists() or internal_path.stat().st_size == 0:
@@ -475,12 +475,9 @@ class PlayerService(QObject):
                     if self._current_track and self._current_track.file_id == file_id:
                         self._switch_active_stream_to_local_file(dest_file)
 
-                    # Delete duplicate temp file immediately
-                    try:
-                        internal_path.unlink(missing_ok=True)
-                        logger.info("🗑️ Immediately deleted internal cache temp file: %s", internal_path.name)
-                    except Exception:
-                        pass
+                    # Remove the cached file from TDLib and disk via CacheManager
+                    self._cache.remove_file(file_id, delete_from_tdlib=True)
+                    logger.info("🗑️ Removed cached temp file (file_id=%d) from cache and TDLib.", file_id)
 
         except Exception as exc:
             logger.warning("Could not export audio to %s: %s", dest_file, exc)

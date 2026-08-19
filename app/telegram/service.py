@@ -21,7 +21,6 @@ from app.telegram.worker import TDLibWorker
 
 logger = logging.getLogger("tmusic.telegram.service")
 
-
 @dataclass(slots=True)
 class ChatTrackPaginationState:
     chat_id: int
@@ -29,7 +28,6 @@ class ChatTrackPaginationState:
     next_from_message_id: int = 0
     is_loading: bool = False
     has_more: bool = True
-
 
 class TelegramService(QObject):
     """Event-Driven Telegram service with direct header byte inspection and real-time updates."""
@@ -57,11 +55,13 @@ class TelegramService(QObject):
         config: AppConfig,
         adapter: TDLibAdapter,
         settings_service: SettingsService | None = None,
+        cache_manager: Any = None,  # CacheManager
     ) -> None:
         super().__init__()
         self._config = config
         self._adapter = adapter
         self._settings = settings_service
+        self._cache = cache_manager
         self._worker: TDLibWorker | None = None
 
         self._my_user_id: int = 0
@@ -79,7 +79,8 @@ class TelegramService(QObject):
 
         self._media = MediaHandler(
             adapter=self._adapter,
-            config=self._config,  # <-- pass config
+            config=self._config,
+            cache_manager=self._cache,
             on_audio_progress=self.file_download_progress.emit,
             on_audio_completed=self.file_download_completed.emit,
             on_cover_completed=self.cover_downloaded.emit,

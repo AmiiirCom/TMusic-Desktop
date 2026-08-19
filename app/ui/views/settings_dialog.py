@@ -13,10 +13,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.cache.service import CacheService
+from app.cache.service import CacheManager
 from app.settings.service import SettingsService
 from app.ui.views.base_modal import BaseModalDialog
-
 
 class SettingsDialog(BaseModalDialog):
     """Clean, well-proportioned Settings, Proxy, and Storage management modal."""
@@ -27,12 +26,12 @@ class SettingsDialog(BaseModalDialog):
 
     def __init__(
         self,
-        cache_service: CacheService,
+        cache_manager: CacheManager,
         settings_service: SettingsService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(title="تنظیمات و حافظه TMusic", parent=parent)
-        self._cache = cache_service
+        self._cache = cache_manager
         self._settings = settings_service
         self.card_frame.setFixedWidth(460)
         self._init_body()
@@ -76,7 +75,7 @@ class SettingsDialog(BaseModalDialog):
         storage_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(storage_title)
 
-        path_label = QLabel(str(self._cache.downloads_path))
+        path_label = QLabel(str(self._cache._config.downloads_dir))
         path_label.setStyleSheet("color: #7f91a4; font-size: 11px;")
         path_label.setWordWrap(True)
         path_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
@@ -93,9 +92,9 @@ class SettingsDialog(BaseModalDialog):
         storage_actions_row.setSpacing(10)
 
         cache_info_layout = QVBoxLayout()
-        cache_label = QLabel("حجم کش:")
+        cache_label = QLabel("حجم کش (تا ۲۵۰ مگابایت):")
         cache_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
-        self.cache_size_val = QLabel(self._cache.get_formatted_cache_size())
+        self.cache_size_val = QLabel(self._cache.get_formatted_size())
         self.cache_size_val.setStyleSheet("font-size: 13px; font-weight: bold; color: #4fae4e;")
         cache_info_layout.addWidget(cache_label)
         cache_info_layout.addWidget(self.cache_size_val)
@@ -140,11 +139,12 @@ class SettingsDialog(BaseModalDialog):
         self.proxy_saved.emit(ptype, server, port)
 
     def _on_open_downloads_folder(self) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._cache.downloads_path)))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._cache._config.downloads_dir)))
 
     def _on_clear_cache(self) -> None:
-        self._cache.clear_cache()
-        self.cache_size_val.setText(self._cache.get_formatted_cache_size())
+        self._cache.clear_all()
+        self.cache_size_val.setText(self._cache.get_formatted_size())
+        self.downloads_size_val.setText(self._cache.get_formatted_downloads_size())
         self.cache_cleared.emit()
 
     def _on_logout_clicked(self) -> None:

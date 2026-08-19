@@ -3,8 +3,9 @@ import os
 from pathlib import Path
 import sys
 
-from app.platform.paths import get_default_downloads_dir
+from PySide6.QtCore import QStandardPaths
 
+from app.platform.paths import get_default_downloads_dir
 
 def _load_env(env_path: Path) -> dict[str, str]:
     env_vars: dict[str, str] = {}
@@ -22,7 +23,6 @@ def _load_env(env_path: Path) -> dict[str, str]:
         pass
     return env_vars
 
-
 def _get_root_and_bundle_dir() -> tuple[Path, Path]:
     if getattr(sys, "frozen", False):
         root = Path(sys.executable).resolve().parent
@@ -32,19 +32,15 @@ def _get_root_and_bundle_dir() -> tuple[Path, Path]:
         root = Path(__file__).resolve().parent.parent
         return root, root
 
-
-_ROOT_DIR, _BUNDLE_DIR = _get_root_and_bundle_dir()
-_ENV_VARS = _load_env(_ROOT_DIR / ".env")
-
-
 def _get_api_id() -> int:
     val = os.getenv("TMUSIC_API_ID") or _ENV_VARS.get("TMUSIC_API_ID", "0")
     return int(val) if val.isdigit() else 0
 
-
 def _get_api_hash() -> str:
     return os.getenv("TMUSIC_API_HASH") or _ENV_VARS.get("TMUSIC_API_HASH", "")
 
+_ROOT_DIR, _BUNDLE_DIR = _get_root_and_bundle_dir()
+_ENV_VARS = _load_env(_ROOT_DIR / ".env")
 
 @dataclass(slots=True, frozen=True)
 class AppConfig:
@@ -53,14 +49,48 @@ class AppConfig:
     organization_name: str = "TMusicOrg"
     organization_domain: str = "tmusic.local"
 
-    root_dir: Path = _ROOT_DIR
-    bundle_dir: Path = _BUNDLE_DIR
-    resources_dir: Path = _BUNDLE_DIR / "resources"
-    translations_dir: Path = _BUNDLE_DIR / "resources" / "translations"
-    data_dir: Path = _ROOT_DIR / "data"
-    tdlib_dir: Path = _ROOT_DIR / "data" / "tdlib"
-    tdlib_files_dir: Path = _ROOT_DIR / "data" / "cache"
-    thumb_cache_dir: Path = _ROOT_DIR / "data" / "thumb_cache"
+    # Legacy paths for backward compatibility
+    root_dir: Path = field(default=_ROOT_DIR)
+    bundle_dir: Path = field(default=_BUNDLE_DIR)
+
+    @property
+    def resources_dir(self) -> Path:
+        return self.bundle_dir / "resources"
+
+    @property
+    def translations_dir(self) -> Path:
+        return self.resources_dir / "translations"
+
+    # Standard Qt paths (platform-independent)
+    @property
+    def app_data_dir(self) -> Path:
+        path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        return Path(path) / "TMusicData"
+
+    @property
+    def cache_dir(self) -> Path:
+        path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+        return Path(path) / "TMusicData"
+
+    @property
+    def tdlib_dir(self) -> Path:
+        return self.app_data_dir / "tdlib"
+
+    @property
+    def tdlib_files_dir(self) -> Path:
+        return self.cache_dir / "tdlib_files"
+
+    @property
+    def thumb_cache_dir(self) -> Path:
+        return self.cache_dir / "thumbnails"
+
+    @property
+    def metadata_file(self) -> Path:
+        return self.cache_dir / "cache_metadata.enc"
+
+    @property
+    def settings_file(self) -> Path:
+        return self.app_data_dir / "settings.enc"
 
     downloads_dir: Path = field(default_factory=get_default_downloads_dir)
 
@@ -68,7 +98,8 @@ class AppConfig:
     api_hash: str = field(default_factory=_get_api_hash)
 
     def ensure_directories(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.app_data_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.tdlib_dir.mkdir(parents=True, exist_ok=True)
         self.tdlib_files_dir.mkdir(parents=True, exist_ok=True)
         self.thumb_cache_dir.mkdir(parents=True, exist_ok=True)

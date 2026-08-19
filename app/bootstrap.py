@@ -5,7 +5,9 @@ from PySide6.QtWidgets import QApplication
 from app.config import AppConfig
 from app.core.fonts import setup_application_fonts
 from app.ui.themes.theme_manager import ThemeManager
-
+from app.core.security import CryptoManager
+from app.cache.service import CacheManager
+from app.telegram.adapter import TDLibAdapter
 
 def create_application(config: AppConfig) -> QApplication:
     """Initialize and configure the Qt Application with Vazirmatn Font & Theme."""

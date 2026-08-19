@@ -12,10 +12,8 @@ from app.config import AppConfig
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 LOG_BACKUP_COUNT = 3
 
-
 def setup_logging(config: AppConfig, is_dev: bool = True) -> logging.Logger:
-    """Initialize central thread-safe queue-based logging with crash hooks."""
-    log_dir = config.root_dir / "log"
+    log_dir = config.app_data_dir / "log"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -54,7 +52,6 @@ def setup_logging(config: AppConfig, is_dev: bool = True) -> logging.Logger:
 
     atexit.register(listener.stop)
 
-    # Safe Global Exception Hooks
     def handle_main_exception(
         exc_type: type[BaseException],
         exc_value: BaseException,

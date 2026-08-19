@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.bootstrap import create_application
-from app.cache.service import CacheService
+from app.cache.service import CacheManager
 from app.config import AppConfig
 from app.core.logger import setup_logging
 from app.core.security import CryptoManager
@@ -34,11 +34,9 @@ from app.ui.views.track_info_dialog import TrackInfoDialog
 
 logger = logging.getLogger("tmusic.main")
 
-
 def has_saved_telegram_session(config: AppConfig) -> bool:
     td_binlog = config.tdlib_dir / "td.binlog"
     return td_binlog.exists() and td_binlog.stat().st_size > 0
-
 
 class MainWindow(QMainWindow):
     def __init__(
@@ -46,7 +44,7 @@ class MainWindow(QMainWindow):
         config: AppConfig,
         telegram_service: TelegramService,
         player_service: PlayerService,
-        cache_service: CacheService,
+        cache_manager: CacheManager,
         network_meter: NetworkMeter,
         settings_service: SettingsService,
         stream_server: LocalStreamServer,
@@ -56,7 +54,7 @@ class MainWindow(QMainWindow):
         self._config = config
         self._telegram = telegram_service
         self._player = player_service
-        self._cache = cache_service
+        self._cache = cache_manager
         self._meter = network_meter
         self._settings = settings_service
         self._stream_server = stream_server
@@ -69,14 +67,12 @@ class MainWindow(QMainWindow):
         self._central_stack = QStackedWidget(self)
         self.setCentralWidget(self._central_stack)
 
-        # 1. Main Dashboard View
         self._main_view = MainView(self)
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
 
-        # 2. Login View
         self._login_view = LoginView(self)
         self._login_view.phone_submitted.connect(self._telegram.send_phone_number)
         self._login_view.code_submitted.connect(self._telegram.send_code)
@@ -91,7 +87,6 @@ class MainWindow(QMainWindow):
         else:
             self._central_stack.setCurrentWidget(self._login_view)
 
-        # Connect PlayerBar UI controls with PlayerService
         player_bar = self._main_view.player_bar
         player_bar.play_pause_clicked.connect(self._player.toggle_play_pause)
         player_bar.next_clicked.connect(self._player.play_next)
@@ -120,12 +115,10 @@ class MainWindow(QMainWindow):
         self._player.duration_changed.connect(player_bar.set_duration)
         self._player.metadata_updated.connect(player_bar.update_metadata)
 
-        # Network Meter & Cover Integration
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
 
-        # System Tray Integration
         self._tray = TrayService(self, self._player)
         self._tray.show_window_requested.connect(self._restore_window)
         self._tray.quit_requested.connect(self._quit_application)
@@ -214,12 +207,18 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.debug("Service shutdown error during logout: %s", exc)
 
-        if self._config.data_dir.exists():
-            try:
-                shutil.rmtree(self._config.data_dir, ignore_errors=True)
-                logger.info("✅ Wiped all data directory contents successfully.")
-            except Exception as exc:
-                logger.warning("Could not wipe data directory: %s", exc)
+        try:
+            self._cache.clear_all()
+        except Exception as exc:
+            logger.debug("Cache clear error: %s", exc)
+
+        for dir_path in (self._config.app_data_dir, self._config.cache_dir):
+            if dir_path.exists():
+                try:
+                    shutil.rmtree(dir_path, ignore_errors=True)
+                    logger.info("✅ Wiped %s", dir_path)
+                except Exception as exc:
+                    logger.warning("Could not wipe %s: %s", dir_path, exc)
 
         QApplication.quit()
 
@@ -278,25 +277,20 @@ class MainWindow(QMainWindow):
             case AuthState.WAIT_PHONE_NUMBER | AuthState.CLOSED | AuthState.LOGGING_OUT:
                 self._central_stack.setCurrentWidget(self._login_view)
                 self._login_view.show_phone_step()
-
             case AuthState.WAIT_CODE:
                 self._central_stack.setCurrentWidget(self._login_view)
                 self._login_view.show_code_step()
-
             case AuthState.WAIT_PASSWORD:
                 self._central_stack.setCurrentWidget(self._login_view)
                 self._login_view.show_password_step()
-
             case AuthState.READY:
                 self._central_stack.setCurrentWidget(self._main_view)
 
     @Slot()
     def _on_track_label_clicked(self) -> None:
-        """Scroll to the current track in the list when user clicks on cover or title."""
         track = self._player.current_track
         if track:
             self._main_view.scroll_to_track(track)
-
 
 def main() -> int:
     config = AppConfig()
@@ -306,22 +300,25 @@ def main() -> int:
 
     app = create_application(config)
 
-    crypto_manager = CryptoManager(config.data_dir)
-    settings_service = SettingsService(config.data_dir, crypto_manager)
+    crypto_manager = CryptoManager(config.app_data_dir)
+    settings_service = SettingsService(config, crypto_manager)
 
     tdlib_adapter = TDLibAdapter()
     stream_server = LocalStreamServer(tdlib_adapter)
-    telegram_service = TelegramService(config, tdlib_adapter, settings_service)
 
-    player_service = PlayerService(config, telegram_service, settings_service, stream_server)
-    cache_service = CacheService(config)
+    cache_manager = CacheManager(config, crypto_manager, tdlib_adapter)
+
+    telegram_service = TelegramService(config, tdlib_adapter, settings_service, cache_manager)
+
+    player_service = PlayerService(config, telegram_service, settings_service, cache_manager, stream_server)
+
     network_meter = NetworkMeter()
 
     window = MainWindow(
         config,
         telegram_service,
         player_service,
-        cache_service,
+        cache_manager,
         network_meter,
         settings_service,
         stream_server,
@@ -333,13 +330,11 @@ def main() -> int:
 
     exit_code = app.exec()
 
-    # Clean shutdown
     stream_server.stop()
     telegram_service.stop()
     tdlib_adapter.close()
     logger.info("Application exited cleanly with code %d", exit_code)
     return exit_code
-
 
 if __name__ == "__main__":
     sys.exit(main())

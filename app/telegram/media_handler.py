@@ -1,3 +1,4 @@
+import base64
 import logging
 from pathlib import Path
 from typing import Any, Callable
@@ -7,7 +8,6 @@ from app.telegram.adapter import TDLibAdapter
 
 logger = logging.getLogger("tmusic.telegram.media")
 
-
 class MediaHandler:
     """Manages audio file streaming downloads, HD cover art, and immediate completion dispatching."""
 
@@ -15,12 +15,14 @@ class MediaHandler:
         self,
         adapter: TDLibAdapter,
         config: Any,  # AppConfig
+        cache_manager: Any,  # CacheManager
         on_audio_progress: Callable[[int, int, int], None],
         on_audio_completed: Callable[[int, str], None],
         on_cover_completed: Callable[[str, str], None],
     ) -> None:
         self._adapter = adapter
         self._config = config
+        self._cache = cache_manager
         self._on_audio_progress = on_audio_progress
         self._on_audio_completed = on_audio_completed
         self._on_cover_completed = on_cover_completed
@@ -112,7 +114,6 @@ class MediaHandler:
                 # Compress the cover image before emitting
                 orig_path = Path(path)
                 if orig_path.exists():
-                    from app.core.image_compressor import get_compressed_image_path
                     compressed_path = get_compressed_image_path(
                         self._config.thumb_cache_dir,
                         "cover",
@@ -120,15 +121,19 @@ class MediaHandler:
                     )
                     result = compress_image(orig_path, compressed_path)
                     if result:
-                        logger.debug("Cover compressed: %s -> %s", orig_path.name, result.name)
+                        # Register compressed file in cache manager
+                        self._cache.add_file(file_id, result, file_type="thumb")
+                        # Delete original file via TDLib
+                        self._delete_from_tdlib(file_id)
+                        logger.debug("Cover compressed and cached: %s", result)
                         self._on_cover_completed(track_id, str(result))
-                        # Delete original file
-                        try:
-                            orig_path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
                         return
                 # If compression fails, fallback to original
+                # But we still register original in cache (it will be in thumb_cache_dir? Actually it's in TDLib cache)
+                # Better to move it to thumb_cache_dir? But we can just use original path.
+                # For simplicity, we just emit original path and let cache manager track it?
+                # We'll track it in cache manager as well.
+                self._cache.add_file(file_id, orig_path, file_type="thumb")
                 self._on_cover_completed(track_id, path)
                 return
 
@@ -139,3 +144,16 @@ class MediaHandler:
 
         elif local.get("is_downloading_active", False):
             self._on_audio_progress(file_id, downloaded, total)
+
+    def _delete_from_tdlib(self, file_id: int) -> None:
+        """Send deleteFile request to TDLib."""
+        if not self._adapter.is_loaded:
+            return
+        try:
+            self._adapter.send({
+                "@type": "deleteFile",
+                "file_id": file_id,
+            })
+            logger.debug("Sent deleteFile request to TDLib for file_id=%d", file_id)
+        except Exception as exc:
+            logger.warning("Failed to send deleteFile to TDLib: %s", exc)
