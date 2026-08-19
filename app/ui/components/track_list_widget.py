@@ -20,7 +20,6 @@ def create_rounded_cover_pixmap(
     size: int = 44,
     is_active: bool = False,
 ) -> QPixmap:
-    """Render a crystal-clear anti-aliased 2x Retina cover with an active equalizer badge."""
     scale = 2
     render_size = size * scale
     target_pixmap = QPixmap(render_size, render_size)
@@ -75,7 +74,7 @@ def create_rounded_cover_pixmap(
         painter.setFont(font)
         painter.drawText(target_pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
 
-    # 4. Prominent Active Equalizer Overlay Badge
+    # 4. Active Equalizer Overlay Badge
     if is_active:
         badge_size = 18 * scale
         badge_x = render_size - badge_size - (3 * scale)
@@ -97,7 +96,7 @@ def create_rounded_cover_pixmap(
 
 
 class TrackItemWidget(QWidget):
-    """Custom Telegram-styled track list item with distinct active playback card styling."""
+    """Custom Telegram-styled track list item with dynamic in-place state updating."""
 
     def __init__(self, track: Track, is_active: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -112,7 +111,55 @@ class TrackItemWidget(QWidget):
         layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(14)
 
-        # High-contrast highlight background ONLY for the active playing track
+        self.cover_label = QLabel()
+        self.cover_label.setFixedSize(44, 44)
+        self.cover_label.setStyleSheet("background: transparent; border: none;")
+
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(3)
+        info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self.title_label = QLabel(self.track.display_title)
+        self.artist_label = QLabel(self.track.display_artist)
+
+        info_layout.addWidget(self.title_label)
+        info_layout.addWidget(self.artist_label)
+
+        meta_layout = QVBoxLayout()
+        meta_layout.setSpacing(2)
+        meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+
+        self.duration_label = QLabel(self.track.formatted_duration)
+        self.duration_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+
+        meta_text = (
+            f"{self.track.formatted_size} • {self.track.formatted_date}"
+            if self.track.formatted_date
+            else self.track.formatted_size
+        )
+        self.meta_sub_label = QLabel(meta_text)
+        self.meta_sub_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+
+        meta_layout.addWidget(self.duration_label)
+        meta_layout.addWidget(self.meta_sub_label)
+
+        layout.addWidget(self.cover_label)
+        layout.addLayout(info_layout)
+        layout.addStretch()
+        layout.addLayout(meta_layout)
+
+        # Apply initial active/inactive visuals
+        self._apply_visual_state()
+
+    def set_active_state(self, is_active: bool) -> None:
+        """Update active highlight in-place without rebuilding the widget tree."""
+        if self._is_active == is_active:
+            return
+        self._is_active = is_active
+        self._apply_visual_state()
+
+    def _apply_visual_state(self) -> None:
+        """Apply colors, borders, and cover badge based on active playback state."""
         if self._is_active:
             self.setStyleSheet("""
                 TrackItemWidget {
@@ -121,6 +168,10 @@ class TrackItemWidget(QWidget):
                     border-radius: 8px;
                 }
             """)
+            self.title_label.setStyleSheet("color: #52a3ff; font-size: 14px; font-weight: bold; background: transparent; border: none;")
+            self.artist_label.setStyleSheet("color: #9ec6ed; font-size: 12px; background: transparent; border: none;")
+            self.duration_label.setStyleSheet("color: #52a3ff; font-size: 13px; font-weight: bold; background: transparent; border: none;")
+            self.meta_sub_label.setStyleSheet("color: #8db3d6; font-size: 11px; background: transparent; border: none;")
         else:
             self.setStyleSheet("""
                 TrackItemWidget {
@@ -132,62 +183,12 @@ class TrackItemWidget(QWidget):
                     background-color: #17212b;
                 }
             """)
+            self.title_label.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold; background: transparent; border: none;")
+            self.artist_label.setStyleSheet("color: #7f91a4; font-size: 12px; background: transparent; border: none;")
+            self.duration_label.setStyleSheet("color: #7f91a4; font-size: 13px; font-weight: bold; background: transparent; border: none;")
+            self.meta_sub_label.setStyleSheet("color: #5d6e80; font-size: 11px; background: transparent; border: none;")
 
-        # 1. Cover Artwork (44x44)
-        self.cover_label = QLabel()
-        self.cover_label.setFixedSize(44, 44)
-        self.cover_label.setStyleSheet("background: transparent; border: none;")
         self.update_cover(self.track.cover_path)
-
-        # 2. Title & Artist
-        info_layout = QVBoxLayout()
-        info_layout.setSpacing(3)
-        info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        title_color = "#52a3ff" if self._is_active else "#ffffff"
-        self.title_label = QLabel(self.track.display_title)
-        self.title_label.setStyleSheet(
-            f"color: {title_color}; font-size: 14px; font-weight: bold; background: transparent; border: none;"
-        )
-
-        artist_color = "#9ec6ed" if self._is_active else "#7f91a4"
-        self.artist_label = QLabel(self.track.display_artist)
-        self.artist_label.setStyleSheet(
-            f"color: {artist_color}; font-size: 12px; background: transparent; border: none;"
-        )
-
-        info_layout.addWidget(self.title_label)
-        info_layout.addWidget(self.artist_label)
-
-        # 3. Metadata (Duration, Size, Release Date)
-        meta_layout = QVBoxLayout()
-        meta_layout.setSpacing(2)
-        meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-
-        duration_color = "#52a3ff" if self._is_active else "#7f91a4"
-        duration_label = QLabel(self.track.formatted_duration)
-        duration_label.setStyleSheet(
-            f"color: {duration_color}; font-size: 13px; font-weight: bold; background: transparent; border: none;"
-        )
-        duration_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-
-        meta_text = (
-            f"{self.track.formatted_size} • {self.track.formatted_date}"
-            if self.track.formatted_date
-            else self.track.formatted_size
-        )
-        meta_color = "#8db3d6" if self._is_active else "#5d6e80"
-        meta_sub_label = QLabel(meta_text)
-        meta_sub_label.setStyleSheet(f"color: {meta_color}; font-size: 11px; background: transparent; border: none;")
-        meta_sub_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-
-        meta_layout.addWidget(duration_label)
-        meta_layout.addWidget(meta_sub_label)
-
-        layout.addWidget(self.cover_label)
-        layout.addLayout(info_layout)
-        layout.addStretch()
-        layout.addLayout(meta_layout)
 
     def update_cover(self, cover_path: str | None) -> None:
         pixmap = create_rounded_cover_pixmap(
@@ -200,10 +201,7 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """
-    List widget with custom active track card highlighting,
-    infinite scroll, and completely disabled right-click events.
-    """
+    """List widget with in-place highlight switching (zero scroll jumping)."""
 
     track_selected = Signal(Track)
     load_more_requested = Signal()
@@ -218,7 +216,6 @@ class TrackListWidget(QListWidget):
         self._has_more: bool = True
         self._is_loading_more: bool = False
 
-        # Disable selection and context menus completely
         self.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
@@ -246,21 +243,18 @@ class TrackListWidget(QListWidget):
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Block right-clicks entirely."""
         if event.button() == Qt.MouseButton.RightButton:
             event.ignore()
             return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """Block right-clicks entirely."""
         if event.button() == Qt.MouseButton.RightButton:
             event.ignore()
             return
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event: Any) -> None:
-        """Block context menu entirely."""
         event.ignore()
 
     def set_tracks(self, tracks: list[Track], has_more: bool = True) -> None:
@@ -350,8 +344,25 @@ class TrackListWidget(QListWidget):
             widget.update_cover(cover_path)
 
     def set_active_track(self, track: Track | None) -> None:
-        self._active_track_id = track.id if track else None
-        self.filter_tracks(self._current_query)
+        """
+        In-place highlight update:
+        Toggles state ONLY on old and new widgets. Zero list rebuild, zero scroll jump!
+        """
+        new_id = track.id if track else None
+        old_id = self._active_track_id
+
+        if old_id == new_id:
+            return
+
+        # 1. Turn OFF previous active widget
+        if old_id and old_id in self._track_widgets:
+            self._track_widgets[old_id].set_active_state(False)
+
+        # 2. Turn ON new active widget
+        if new_id and new_id in self._track_widgets:
+            self._track_widgets[new_id].set_active_state(True)
+
+        self._active_track_id = new_id
 
     def filter_tracks(self, query: str) -> None:
         self._current_query = query.strip().lower()
