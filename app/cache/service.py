@@ -8,7 +8,7 @@ logger = logging.getLogger("tmusic.cache.service")
 
 
 class CacheService:
-    """Manages downloaded media files inside clean TMusicDownloads folder and internal cache."""
+    """Manages internal cache and user-facing downloads folder."""
 
     def __init__(self, config: AppConfig) -> None:
         self._config = config
@@ -33,10 +33,17 @@ class CacheService:
         return f"{size / (1024 * 1024):.1f} MB"
 
     def clear_cache(self) -> None:
-        """Clear all downloaded music files in TMusicDownloads and internal temp cache."""
-        logger.info("Clearing clean music files from %s...", self._config.downloads_dir)
-        if self._config.downloads_dir.exists():
-            for item in self._config.downloads_dir.glob("*"):
+        """
+        Clear internal cache files only.
+        - Removes TDLib temporary files (data/cache)
+        - Removes thumbnails (data/tdlib/thumbnails)
+        - Preserves TMusicDownloads folder and user-downloaded music
+        """
+        logger.info("Clearing internal cache from %s...", self._config.tdlib_files_dir)
+
+        # 1. Clean TDLib files directory (cached audio parts, etc.)
+        if self._config.tdlib_files_dir.exists():
+            for item in self._config.tdlib_files_dir.glob("*"):
                 try:
                     if item.is_file() or item.is_symlink():
                         item.unlink()
@@ -45,14 +52,16 @@ class CacheService:
                 except Exception as exc:
                     logger.warning("Could not delete %s: %s", item, exc)
 
-        # Also clean internal temp cache defensively
-        if hasattr(self._config, "tdlib_files_dir") and self._config.tdlib_files_dir.exists():
-            for item in self._config.tdlib_files_dir.glob("*"):
+        # 2. Clean thumbnails directory (inside tdlib_dir)
+        thumb_dir = self._config.tdlib_dir / "thumbnails"
+        if thumb_dir.exists():
+            for item in thumb_dir.glob("*"):
                 try:
                     if item.is_file() or item.is_symlink():
                         item.unlink()
                     elif item.is_dir():
                         shutil.rmtree(item)
-                except Exception:
-                    pass
-        logger.info("Downloads and internal temp cache cleared successfully.")
+                except Exception as exc:
+                    logger.warning("Could not delete %s: %s", item, exc)
+
+        logger.info("Internal cache cleared successfully. TMusicDownloads folder untouched.")
