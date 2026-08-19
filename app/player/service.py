@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 import shutil
 import threading
+from typing import Any
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
@@ -22,8 +23,8 @@ logger = logging.getLogger("tmusic.player.service")
 
 class PlayerService(QObject):
     """
-    Audio playback engine with persistent download registry,
-    multi-strategy disk matching (zero re-downloads), and gapless prefetching.
+    Audio playback engine with instant progressive streaming,
+    immediate live-to-local handover upon 100% download, and TMusicDownloads export.
     """
 
     track_changed = Signal(object)
@@ -81,7 +82,7 @@ class PlayerService(QObject):
         self._telegram.file_download_completed.connect(self._on_file_download_completed)
         self._telegram.file_download_progress.connect(self._on_file_download_progress)
 
-        # Launch non-blocking background migration on startup
+        # Startup background sweep of any leftover files
         self.sweep_and_export_internal_cache(async_mode=True)
 
     @property
@@ -171,30 +172,18 @@ class PlayerService(QObject):
         return self._config.downloads_dir / clean_title
 
     def _find_existing_download_on_disk(self, track: Track) -> Path | None:
-        """
-        Multi-Strategy Search in TMusicDownloads:
-        1. Check persistent encrypted registry (SettingsService)
-        2. Check memory cache (_cached_paths)
-        3. Check clean name (Artist - Title.ext)
-        4. Check raw Telegram filename (file_name)
-        5. Check title name (Title.ext)
-        6. Check exact byte-size match in downloads folder
-        """
-        # 1. Persistent encrypted registry
         persisted_path = self._settings.get_downloaded_track_path(track.id, track.file_id)
         if persisted_path:
             p = Path(persisted_path)
             if p.exists() and p.stat().st_size > 0:
                 return p
 
-        # 2. In-memory cache
         mem_cached = self._cached_paths.get(track.file_id)
         if mem_cached:
             p = Path(mem_cached)
             if p.exists() and p.stat().st_size > 0:
                 return p
 
-        # 3. Check candidate filenames in TMusicDownloads
         ext = Path(track.file_name).suffix or ".mp3"
         candidates = [
             self._get_clean_download_destination(track),
@@ -207,7 +196,6 @@ class PlayerService(QObject):
             if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
                 return cand
 
-        # 4. Check matching file by exact size in TMusicDownloads
         if track.size_bytes > 0 and self._config.downloads_dir.exists():
             for f in self._config.downloads_dir.glob("*"):
                 if f.is_file() and f.stat().st_size == track.size_bytes:
@@ -284,7 +272,7 @@ class PlayerService(QObject):
         self.track_changed.emit(track)
         self.metadata_updated.emit(self._current_metadata)
 
-        # 1. Multi-Strategy Search in TMusicDownloads / Registry
+        # 1. Multi-Strategy Search in TMusicDownloads / Registry (Instant 0ms)
         existing_file = self._find_existing_download_on_disk(track)
         if existing_file:
             self._cached_paths[track.file_id] = str(existing_file)
@@ -294,11 +282,12 @@ class PlayerService(QObject):
             self._start_playback_source(QUrl.fromLocalFile(str(existing_file.resolve())))
             return
 
-        # 2. Progressive Stream
+        # 2. Start progressive live stream AND trigger background download
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
             logger.info("⚡ Instant Progressive Stream starting: %s", stream_url)
             self._start_playback_source(QUrl(stream_url))
+            self._telegram.download_file(track.file_id)  # Trigger full background download!
         else:
             self._telegram.download_file(track.file_id)
 
@@ -308,6 +297,33 @@ class PlayerService(QObject):
             self._player.play()
         except Exception as exc:
             logger.warning("Could not set player source (%s): %s", url, exc)
+
+    def _switch_active_stream_to_local_file(self, local_file: Path) -> None:
+        """
+        Seamless Handover: Switch source from live HTTP stream to local completed file,
+        preserving the exact playback position without resetting to 0.
+        """
+        if not local_file.exists() or local_file.stat().st_size == 0:
+            return
+
+        current_url = self._player.source().toString()
+        if "http://" in current_url or "127.0.0.1" in current_url:
+            saved_pos = self._player.position()
+            was_playing = self.is_playing
+            local_url = QUrl.fromLocalFile(str(local_file.resolve()))
+
+            logger.info(
+                "🔄 Seamless Live-to-Local Switch: Handing over to '%s' at %d ms (0 interruption)",
+                local_file.name, saved_pos
+            )
+
+            self._player.setSource(local_url)
+            if saved_pos > 0:
+                self._player.setPosition(saved_pos)
+            if was_playing:
+                self._player.play()
+                if saved_pos > 0:
+                    self._player.setPosition(saved_pos)
 
     def toggle_play_pause(self) -> None:
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -406,6 +422,12 @@ class PlayerService(QObject):
 
     @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
+        """
+        Instant Export & Seamless Switch:
+        1. Copy completed file to TMusicDownloads.
+        2. If track is actively streaming, seamlessly switch QMediaPlayer source to local file.
+        3. Delete redundant temp cache file immediately.
+        """
         internal_path = Path(internal_path_str)
         if not internal_path.exists() or internal_path.stat().st_size == 0:
             return
@@ -442,11 +464,13 @@ class PlayerService(QObject):
                     self._settings.register_downloaded_track(track_id, file_id, str(dest_file))
                     self._telegram.register_downloaded_path(file_id, str(dest_file))
 
-                    if self._stream_server:
-                        self._stream_server.register_completed_file(file_id, str(dest_file))
-
                     logger.info("✅ Instantly exported and registered in TMusicDownloads: %s", dest_file.name)
 
+                    # Seamless Live-to-Local Switch if actively playing this track
+                    if self._current_track and self._current_track.file_id == file_id:
+                        self._switch_active_stream_to_local_file(dest_file)
+
+                    # Delete duplicate temp file immediately
                     try:
                         internal_path.unlink(missing_ok=True)
                         logger.info("🗑️ Immediately deleted internal cache temp file: %s", internal_path.name)

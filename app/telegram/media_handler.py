@@ -8,7 +8,7 @@ logger = logging.getLogger("tmusic.telegram.media")
 
 
 class MediaHandler:
-    """Manages high-priority audio file streaming downloads and boosted HD cover art downloads."""
+    """Manages audio file streaming downloads, HD cover art, and immediate completion dispatching."""
 
     def __init__(
         self,
@@ -41,12 +41,13 @@ class MediaHandler:
             self._file_id_to_path[file_id] = path
 
     def download_audio_file(self, file_id: int) -> None:
+        """Download with MAXIMUM priority (32) for immediate playback and export."""
         if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
             self._on_audio_completed(file_id, self._file_id_to_path[file_id])
             return
 
         self._downloading_audio_files.add(file_id)
-        logger.info("Requesting TDLib download for file ID: %d (Priority 32)", file_id)
+        logger.info("Requesting immediate TDLib download for file ID: %d (Priority 32)", file_id)
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
@@ -57,6 +58,7 @@ class MediaHandler:
         })
 
     def prefetch_audio_file(self, file_id: int) -> None:
+        """Pre-download upcoming track with background priority (16)."""
         if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
             return
 
@@ -72,7 +74,6 @@ class MediaHandler:
         })
 
     def download_cover_file(self, track_id: str, file_id: int) -> None:
-        """Boosted priority (16) for ultra-fast album artwork rendering."""
         if not file_id:
             return
 
@@ -85,7 +86,7 @@ class MediaHandler:
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
-            "priority": 16,  # Boosted priority for rapid thumbnail downloads
+            "priority": 16,
             "offset": 0,
             "limit": 0,
             "synchronous": False,
@@ -102,13 +103,14 @@ class MediaHandler:
         if is_completed and path:
             self._file_id_to_path[file_id] = path
 
+            # 1. HD cover art check
             track_id = self._cover_file_to_track_id.pop(file_id, None)
             if track_id:
                 self._on_cover_completed(track_id, path)
-
-            if file_id in self._downloading_audio_files:
+            else:
+                # 2. Audio track completion -> ALWAYS notify for immediate TMusicDownloads export!
                 self._downloading_audio_files.discard(file_id)
-                logger.info("Audio file %d download completed: %s", file_id, path)
+                logger.info("Audio file ID %d 100%% complete in TDLib -> Triggering immediate export: %s", file_id, path)
                 self._on_audio_completed(file_id, path)
 
         elif local.get("is_downloading_active", False):
