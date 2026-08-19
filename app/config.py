@@ -56,7 +56,7 @@ class AppConfig:
     @property
     def app_full_name(self) -> str:
         """Full application name including version for session identification."""
-        return f"{self.app_name} Desktop {self.app_version}"
+        return f"{self.app_name} Desktop"
 
     @property
     def resources_dir(self) -> Path:
