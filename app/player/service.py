@@ -435,7 +435,6 @@ class PlayerService(QObject):
 
         # Safety check: skip image files (should not happen after MediaHandler fix)
         if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
-            logger.debug("Skipping image file export: %s", internal_path.name)
             return
 
         matching_track = self._known_tracks.get(file_id)
