@@ -8,6 +8,7 @@ from app.telegram.adapter import TDLibAdapter
 
 logger = logging.getLogger("tmusic.telegram.media")
 
+
 class MediaHandler:
     """Manages audio file streaming downloads, HD cover art, and immediate completion dispatching."""
 
@@ -52,7 +53,7 @@ class MediaHandler:
             return
 
         self._downloading_audio_files.add(file_id)
-        logger.info("Requesting immediate TDLib download for file ID: %d (Priority 32)", file_id)
+        logger.debug("Requesting immediate TDLib download for file ID: %d (Priority 32)", file_id)
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
@@ -68,7 +69,7 @@ class MediaHandler:
             return
 
         self._downloading_audio_files.add(file_id)
-        logger.info("Smart Pre-fetching track file ID: %d", file_id)
+        logger.debug("Smart Pre-fetching track file ID: %d", file_id)
         self._adapter.send({
             "@type": "downloadFile",
             "file_id": file_id,
@@ -129,17 +130,13 @@ class MediaHandler:
                         self._on_cover_completed(track_id, str(result))
                         return
                 # If compression fails, fallback to original
-                # But we still register original in cache (it will be in thumb_cache_dir? Actually it's in TDLib cache)
-                # Better to move it to thumb_cache_dir? But we can just use original path.
-                # For simplicity, we just emit original path and let cache manager track it?
-                # We'll track it in cache manager as well.
                 self._cache.add_file(file_id, orig_path, file_type="thumb")
                 self._on_cover_completed(track_id, path)
                 return
 
             # Otherwise, treat as audio file -> trigger export to TMusicDownloads
             self._downloading_audio_files.discard(file_id)
-            logger.info("Audio file ID %d 100%% complete in TDLib -> Triggering immediate export: %s", file_id, path)
+            logger.debug("Audio file ID %d 100%% complete in TDLib -> Triggering immediate export: %s", file_id, path)
             self._on_audio_completed(file_id, path)
 
         elif local.get("is_downloading_active", False):

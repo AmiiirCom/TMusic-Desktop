@@ -250,7 +250,7 @@ class PlayerService(QObject):
 
                             if dest_file.exists() and dest_file.stat().st_size == src_size:
                                 file_path.unlink(missing_ok=True)
-                                logger.info("✨ Migrated to TMusicDownloads: %s", dest_file.name)
+                                logger.debug("✨ Migrated to TMusicDownloads: %s", dest_file.name)
                     except Exception as exc:
                         logger.debug("Background sweeper error for %s: %s", file_path, exc)
         finally:
@@ -407,17 +407,17 @@ class PlayerService(QObject):
     @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
         if not internal_path_str or not internal_path_str.strip():
-            logger.warning("Empty path for file_id %d", file_id)
+            logger.debug("Empty path for file_id %d", file_id)
             return
 
         internal_path = Path(internal_path_str)
 
         try:
             if not internal_path.exists() or internal_path.stat().st_size == 0:
-                logger.warning("File %s not available for file_id %d", internal_path, file_id)
+                logger.debug("File %s not available for file_id %d", internal_path, file_id)
                 return
         except Exception as exc:
-            logger.warning("Cannot access %s for file_id %d: %s", internal_path, file_id, exc)
+            logger.debug("Cannot access %s for file_id %d: %s", internal_path, file_id, exc)
             return
 
         if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
@@ -461,7 +461,7 @@ class PlayerService(QObject):
                         self._switch_active_stream_to_local_file(dest_file)
 
                     self._cache.remove_file(file_id, delete_from_tdlib=True)
-                    logger.info("🗑️ Removed cached temp file (file_id=%d)", file_id)
+                    logger.debug("🗑️ Removed cached temp file (file_id=%d)", file_id)
 
         except Exception as exc:
             logger.warning("Could not export to %s: %s", dest_file, exc)
@@ -483,5 +483,5 @@ class PlayerService(QObject):
     @Slot(QMediaPlayer.MediaStatus)
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            logger.info("Track ended. Next...")
+            logger.debug("Track reached end. Transitioning to next...")
             self.play_next()

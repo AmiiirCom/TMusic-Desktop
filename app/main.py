@@ -1,4 +1,8 @@
+# app/main.py
+
+import argparse
 import logging
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -297,7 +301,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_auth_state_changed(self, state: str) -> None:
-        logger.info("Main window reacting to auth state: %s", state)
+        logger.debug("Main window reacting to auth state: %s", state)
         match state:
             case AuthState.WAIT_PHONE_NUMBER | AuthState.LOGGING_OUT:
                 self._central_stack.setCurrentWidget(self._login_view)
@@ -332,7 +336,32 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     config = AppConfig()
-    setup_logging(config, is_dev=True)
+
+    # Parse command-line arguments for log level control
+    parser = argparse.ArgumentParser(description="TMusic Desktop")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging (file only)")
+    parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                        help="Set file log level (overrides --debug)")
+    args, unknown = parser.parse_known_args()
+
+    # Determine default log level based on frozen environment
+    is_frozen = getattr(sys, "frozen", False)
+    default_level = logging.WARNING if is_frozen else logging.INFO
+
+    if args.log_level:
+        log_level = getattr(logging, args.log_level.upper())
+    elif args.debug:
+        log_level = logging.DEBUG
+    else:
+        log_level = default_level
+
+    # Override via environment variable if set
+    env_level = os.environ.get("TMUSIC_LOG_LEVEL", "").upper()
+    if env_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        log_level = getattr(logging, env_level)
+
+    # Initialize logging (console shows WARNING+ always, file respects log_level)
+    setup_logging(config, log_level=log_level, console_level=logging.WARNING)
 
     logger.info("Starting %s v%s...", config.app_name, config.app_version)
 

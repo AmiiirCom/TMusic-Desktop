@@ -7,6 +7,7 @@ from app.telegram.enums import AuthState
 
 logger = logging.getLogger("tmusic.telegram.auth")
 
+
 class AuthHandler:
     """Manages TDLib authorization state machine and credential submissions."""
 
@@ -31,7 +32,7 @@ class AuthHandler:
 
     def process_update(self, auth_state_obj: dict[str, Any]) -> None:
         state_type = auth_state_obj.get("@type", "")
-        logger.info("TDLib Auth State: %s", state_type)
+        logger.debug("TDLib Auth State: %s", state_type)
 
         match state_type:
             case "authorizationStateWaitTdlibParameters":

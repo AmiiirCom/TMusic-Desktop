@@ -12,7 +12,19 @@ from app.config import AppConfig
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 LOG_BACKUP_COUNT = 3
 
-def setup_logging(config: AppConfig, is_dev: bool = True) -> logging.Logger:
+def setup_logging(
+    config: AppConfig,
+    log_level: int = logging.INFO,
+    console_level: int = logging.WARNING,
+) -> logging.Logger:
+    """
+    Initialize the logging system with queue-based async logging.
+
+    Args:
+        config: Application configuration (provides log directory).
+        log_level: Level for the file handler (default: INFO).
+        console_level: Level for the console handler (default: WARNING).
+    """
     log_dir = config.app_data_dir / "log"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -34,17 +46,19 @@ def setup_logging(config: AppConfig, is_dev: bool = True) -> logging.Logger:
         encoding="utf-8",
     )
     file_handler.setFormatter(log_format)
+    file_handler.setLevel(log_level)
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(log_format)
+    console_handler.setLevel(console_level)
 
-    handlers = [file_handler, console_handler] if is_dev else [file_handler]
+    handlers = [file_handler, console_handler]
 
     log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=10_000)
     queue_handler = QueueHandler(log_queue)
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG if is_dev else logging.INFO)
+    root_logger.setLevel(logging.DEBUG)  # Always capture everything, handlers filter
     root_logger.addHandler(queue_handler)
 
     listener = QueueListener(log_queue, *handlers, respect_handler_level=True)
@@ -80,4 +94,7 @@ def setup_logging(config: AppConfig, is_dev: bool = True) -> logging.Logger:
 
     logger = logging.getLogger("tmusic.bootstrap")
     logger.info("Logging system initialized. Log file: %s", log_file)
+    logger.info("Log level: file=%s, console=%s",
+                logging.getLevelName(log_level),
+                logging.getLevelName(console_level))
     return logger

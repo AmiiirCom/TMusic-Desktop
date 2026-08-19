@@ -376,7 +376,7 @@ class MainView(QWidget):
 
     def on_chat_search_results(self, chats: list[OwnedChat]) -> None:
         """Handle chat search results."""
-        logger.info("Chat search results: %d chats found", len(chats))
+        logger.debug("Chat search results: %d chats found", len(chats))
 
         if not chats:
             self.chat_list.clear()
@@ -418,15 +418,15 @@ class MainView(QWidget):
 
     def on_full_search_results(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
         """Handle full search results from TelegramService."""
-        logger.info("on_full_search_results: chat_id=%d, tracks_count=%d, active_chat_id=%s",
-                    chat_id, len(tracks), self._active_chat.id if self._active_chat else None)
+        logger.debug("on_full_search_results: chat_id=%d, tracks_count=%d, active_chat_id=%s",
+                     chat_id, len(tracks), self._active_chat.id if self._active_chat else None)
 
         if not self._active_chat:
-            logger.warning("No active chat, ignoring search results")
+            logger.debug("No active chat, ignoring search results")
             return
 
         if self._active_chat.id != chat_id:
-            logger.warning("Search results for wrong chat: expected %d, got %d", self._active_chat.id, chat_id)
+            logger.debug("Search results for wrong chat: expected %d, got %d", self._active_chat.id, chat_id)
             return
 
         # Store original tracks if first search
@@ -435,11 +435,11 @@ class MainView(QWidget):
             self._is_searching = True
 
         if not tracks:
-            logger.info("Search returned 0 results, showing placeholder")
+            logger.debug("Search returned 0 results, showing placeholder")
             self.placeholder_msg.setText("🔍 نتیجه‌ای برای جستجوی شما یافت نشد!")
             self.content_stack.setCurrentIndex(0)
         else:
-            logger.info("Search returned %d results, updating track list", len(tracks))
+            logger.debug("Search returned %d results, updating track list", len(tracks))
             self.track_list.set_tracks(tracks, has_more=False)
             self.content_stack.setCurrentIndex(1)
 
@@ -452,8 +452,8 @@ class MainView(QWidget):
 
     def restore_normal_tracks(self) -> None:
         """Restore the original track list (before search)."""
-        logger.info("Restoring normal tracks, is_searching=%s, original_tracks_count=%d",
-                    self._is_searching, len(self._original_tracks))
+        logger.debug("Restoring normal tracks, is_searching=%s, original_tracks_count=%d",
+                     self._is_searching, len(self._original_tracks))
 
         if self._is_searching and self._original_tracks:
             self.track_list.set_tracks(self._original_tracks, has_more=True)
@@ -540,7 +540,7 @@ class MainView(QWidget):
         query = self.search_input.text().strip()
         if self._active_chat and query:
             self.content_stack.setCurrentIndex(2)
-            logger.info("Performing full search for chat %d, query='%s'", self._active_chat.id, query)
+            logger.debug("Performing full search for chat %d, query='%s'", self._active_chat.id, query)
             self.search_full_requested.emit(str(self._active_chat.id), query)
 
     # ------------------------------------------------------------------
@@ -561,5 +561,5 @@ class MainView(QWidget):
     def _perform_chat_search(self) -> None:
         query = self.chat_search_input.text().strip()
         if query:
-            logger.info("Performing chat search, query='%s'", query)
+            logger.debug("Performing chat search, query='%s'", query)
             self.chat_search_requested.emit(query)

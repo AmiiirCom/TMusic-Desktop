@@ -18,6 +18,7 @@ MAX_CACHE_SIZE_BYTES = 1024 * 1024 * 1024  # 1 GiB
 # Incomplete file cleanup: delete if older than this many seconds
 INCOMPLETE_FILE_MAX_AGE_SECONDS = 24 * 3600  # 24 hours
 
+
 class CacheManager:
     """
     Centralised cache manager with:
@@ -51,7 +52,7 @@ class CacheManager:
         If the file exists, its last_access is updated.
         """
         if not local_path.exists():
-            logger.warning("Cannot add missing file: %s", local_path)
+            logger.debug("Cannot add missing file: %s", local_path)
             return
 
         with self._lock:
@@ -106,7 +107,7 @@ class CacheManager:
                 if path.exists():
                     try:
                         path.unlink(missing_ok=True)
-                        logger.info("Removed cached file: %s (file_id=%d)", path, file_id)
+                        logger.debug("Removed cached file: %s (file_id=%d)", path, file_id)
                     except Exception as exc:
                         logger.warning("Failed to delete cache file %s: %s", path, exc)
 
@@ -237,7 +238,7 @@ class CacheManager:
             if data and isinstance(data, dict):
                 # Convert keys to int
                 self._metadata = {int(k): v for k, v in data.items()}
-                logger.info("Loaded cache metadata for %d files.", len(self._metadata))
+                logger.debug("Loaded cache metadata for %d files.", len(self._metadata))
             else:
                 self._metadata = {}
         except Exception as exc:

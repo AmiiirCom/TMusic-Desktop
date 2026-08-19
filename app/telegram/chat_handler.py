@@ -46,7 +46,7 @@ class ChatHandler:
             if cached:
                 for c in cached:
                     self._owned_chats[c.id] = c
-                logger.info("Loaded %d music channels from local cache ⚡", len(cached))
+                logger.debug("Loaded %d music channels from local cache ⚡", len(cached))
                 self._on_owned_chats_updated(list(self._owned_chats.values()))
 
     # ------------------------------------------------------------------
@@ -106,7 +106,7 @@ class ChatHandler:
             "limit": limit,
             "@extra": search_id,
         })
-        logger.info("Searching chats with query='%s', search_id='%s'", query, search_id)
+        logger.debug("Searching chats with query='%s', search_id='%s'", query, search_id)
 
     def process_search_results(self, chat_ids: list[int], search_id: str) -> None:
         if not chat_ids:
@@ -202,7 +202,7 @@ class ChatHandler:
 
         if not self._search_pending[search_id]:
             results = self._search_accumulator.get(search_id, [])
-            logger.info("Search completed with %d results", len(results))
+            logger.debug("Search completed with %d results", len(results))
             self._on_search_results(results)
             self._cleanup_search(search_id)
 

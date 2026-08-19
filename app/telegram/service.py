@@ -236,7 +236,7 @@ class TelegramService(QObject):
                 if len(parts) >= 3:
                     try:
                         chat_id = int(parts[2])
-                        logger.warning("Search error for chat %d: %s", chat_id, update.get("message", ""))
+                        logger.debug("Search error for chat %d: %s", chat_id, update.get("message", ""))
                         if chat_id in self._tracks._search_states:
                             del self._tracks._search_states[chat_id]
                     except ValueError:
@@ -249,7 +249,7 @@ class TelegramService(QObject):
                 chat_ids = update.get("chat_ids", [])
                 self._chats.process_search_results(chat_ids, extra)
             elif update_type == "error":
-                logger.warning("Chat search error: %s", update.get("message", ""))
+                logger.debug("Chat search error: %s", update.get("message", ""))
             return
 
         # Chat details from search
@@ -499,7 +499,7 @@ class TelegramService(QObject):
         except ValueError:
             logger.error("Invalid chat_id: %s", chat_id_str)
             return
-        logger.info("Search requested for chat %d, query='%s'", chat_id, query)
+        logger.debug("Search requested for chat %d, query='%s'", chat_id, query)
         self._tracks.search_tracks(chat_id, query)
 
     @Slot(str)
@@ -512,6 +512,7 @@ class TelegramService(QObject):
         self.chat_search_results_received.emit(chats)
 
     def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
+        logger.info("Setting SOCKS5 proxy: %s:%d", server, port)
         self._adapter.send({
             "@type": "addProxy",
             "proxy": {
@@ -525,6 +526,7 @@ class TelegramService(QObject):
         })
 
     def set_http_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
+        logger.info("Setting HTTP proxy: %s:%d", server, port)
         self._adapter.send({
             "@type": "addProxy",
             "proxy": {

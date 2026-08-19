@@ -115,7 +115,7 @@ class TrackHandler:
             limit=limit,
         )
 
-        logger.info("Starting search for chat %d: query='%s', extra='%s'", chat_id, query, extra_id)
+        logger.debug("Starting search for chat %d: query='%s', extra='%s'", chat_id, query, extra_id)
         self._send_search_request(chat_id, query, 0, extra_id, limit)
 
     def _send_search_request(self, chat_id: int, query: str, from_msg_id: int, extra_id: str, limit: int) -> None:
@@ -161,7 +161,7 @@ class TrackHandler:
         search_state = self._search_states.get(chat_id)
 
         if not search_state:
-            logger.warning("No search state for chat %d (extra: %s)", chat_id, extra)
+            logger.debug("No search state for chat %d (extra: %s)", chat_id, extra)
             return
 
         if search_state.extra_id != extra:
@@ -183,7 +183,7 @@ class TrackHandler:
             # All pages received - emit final results
             search_state.is_complete = True
             final_tracks = search_state.accumulated_tracks
-            logger.info("Search complete for chat %d: %d total tracks", chat_id, len(final_tracks))
+            logger.debug("Search complete for chat %d: %d total tracks", chat_id, len(final_tracks))
 
             # Emit results via callback
             self._on_search_results(chat_id, final_tracks, False)

@@ -23,9 +23,9 @@ def setup_application_fonts(app: QApplication, resources_dir: Path) -> None:
     for font_file, url in font_targets:
         if not font_file.exists():
             try:
-                logger.info("Downloading Persian font %s...", font_file.name)
+                logger.debug("Downloading Persian font %s...", font_file.name)
                 urllib.request.urlretrieve(url, str(font_file))
-                logger.info("Font %s downloaded successfully.", font_file.name)
+                logger.debug("Font %s downloaded successfully.", font_file.name)
             except Exception as exc:
                 logger.warning("Could not auto-download font %s: %s", font_file.name, exc)
 
@@ -34,7 +34,7 @@ def setup_application_fonts(app: QApplication, resources_dir: Path) -> None:
         font_id = QFontDatabase.addApplicationFont(str(font_path))
         if font_id != -1:
             families = QFontDatabase.applicationFontFamilies(font_id)
-            logger.info("Registered font family: %s", families)
+            logger.debug("Registered font family: %s", families)
 
     # Apply Vazirmatn as the default Qt Application font
     app_font = QFont("Vazirmatn", 10)
