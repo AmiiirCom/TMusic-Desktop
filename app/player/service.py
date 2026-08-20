@@ -138,6 +138,36 @@ class PlayerService(QObject):
         elif self._current_track:
             self._update_current_index(self._current_track.id)
 
+    @Slot(str, str)
+    def update_track_cover(self, track_id: str, cover_path: str) -> None:
+        """Update cover path in memory for known tracks and active playback."""
+        for idx, t in enumerate(self._playlist):
+            if t.id == track_id:
+                updated = Track(
+                    id=t.id,
+                    chat_id=t.chat_id,
+                    message_id=t.message_id,
+                    file_id=t.file_id,
+                    title=t.title,
+                    artist=t.artist,
+                    duration_seconds=t.duration_seconds,
+                    size_bytes=t.size_bytes,
+                    file_name=t.file_name,
+                    mime_type=t.mime_type,
+                    local_path=t.local_path,
+                    is_downloaded=t.is_downloaded,
+                    date_timestamp=t.date_timestamp,
+                    minithumbnail_data=t.minithumbnail_data,
+                    cover_file_id=t.cover_file_id,
+                    cover_path=cover_path,
+                )
+                self._playlist[idx] = updated
+                self._known_tracks[t.file_id] = updated
+
+                if self._current_track and self._current_track.id == track_id:
+                    self._current_track = updated
+                break
+
     def stop(self) -> None:
         try:
             self._player.stop()

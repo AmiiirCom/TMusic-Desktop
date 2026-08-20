@@ -18,12 +18,16 @@ from app.models.track import Track
 
 SPEED_OPTIONS = (0.75, 1.0, 1.25, 1.5, 1.75)
 
+
 def create_playerbar_cover_pixmap(
     minithumb_data: bytes | None = None,
     cover_path: str | None = None,
     size: int = 48,
 ) -> QPixmap:
-    target = QPixmap(size, size)
+    """Generate crystal-clear Hi-DPI cover artwork for the bottom player bar."""
+    scale = 2
+    render_size = size * scale
+    target = QPixmap(render_size, render_size)
     target.fill(QColor(0, 0, 0, 0))
 
     painter = QPainter(target)
@@ -31,7 +35,7 @@ def create_playerbar_cover_pixmap(
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
     path = QPainterPath()
-    path.addRoundedRect(0, 0, size, size, 8, 8)
+    path.addRoundedRect(0, 0, render_size, render_size, 8 * scale, 8 * scale)
     painter.setClipPath(path)
 
     has_drawn = False
@@ -40,37 +44,39 @@ def create_playerbar_cover_pixmap(
         src = QPixmap(str(cover_path))
         if not src.isNull():
             scaled = src.scaled(
-                size,
-                size,
+                render_size,
+                render_size,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            x = (scaled.width() - size) // 2
-            y = (scaled.height() - size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
+            x = (scaled.width() - render_size) // 2
+            y = (scaled.height() - render_size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
     if not has_drawn and minithumb_data:
         src = QPixmap()
         if src.loadFromData(minithumb_data):
             scaled = src.scaled(
-                size,
-                size,
+                render_size,
+                render_size,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            x = (scaled.width() - size) // 2
-            y = (scaled.height() - size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, size, size))
+            x = (scaled.width() - render_size) // 2
+            y = (scaled.height() - render_size) // 2
+            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
     if not has_drawn:
-        painter.fillRect(0, 0, size, size, QColor("#2b5278"))
+        painter.fillRect(0, 0, render_size, render_size, QColor("#2b5278"))
         painter.setPen(QColor("#ffffff"))
         painter.drawText(target.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
 
     painter.end()
+    target.setDevicePixelRatio(scale)
     return target
+
 
 class PlayerBar(QFrame):
     """Telegram Desktop styled bottom audio player bar with full reset support."""
@@ -91,6 +97,7 @@ class PlayerBar(QFrame):
         self.setFixedHeight(84)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._current_track: Track | None = None
+        self._cover_path: str | None = None
         self._is_slider_dragging = False
         self._duration_ms = 0
         self._current_speed = 1.0
@@ -361,16 +368,18 @@ class PlayerBar(QFrame):
             return
 
         self._current_track = track
+        self._cover_path = track.cover_path
         self.title_label.setText(track.display_title)
         self.artist_label.setText(track.display_artist)
         self.dur_label.setText(track.formatted_duration)
         self.btn_info.setEnabled(True)
         self.btn_lyrics.setEnabled(False)
-        self.update_cover(track.cover_path)
+        self.update_cover(self._cover_path)
 
     def reset_track(self) -> None:
         """Reset player bar to idle empty state when track is deleted/stopped."""
         self._current_track = None
+        self._cover_path = None
         self._duration_ms = 0
         self.title_label.setText("آهنگی در حال پخش نیست")
         self.artist_label.setText(f"{self._config.app_name} Desktop")
@@ -391,13 +400,18 @@ class PlayerBar(QFrame):
             self.btn_lyrics.setToolTip("متن آهنگ یافت نشد")
 
     def update_cover(self, cover_path: str | None) -> None:
-        if self._current_track:
-            pixmap = create_playerbar_cover_pixmap(
-                minithumb_data=self._current_track.minithumbnail_data,
-                cover_path=cover_path or self._current_track.cover_path,
-                size=48,
-            )
-            self.artwork_badge.setPixmap(pixmap)
+        if cover_path:
+            self._cover_path = cover_path
+
+        minithumb = self._current_track.minithumbnail_data if self._current_track else None
+        active_path = self._cover_path or (self._current_track.cover_path if self._current_track else None)
+
+        pixmap = create_playerbar_cover_pixmap(
+            minithumb_data=minithumb,
+            cover_path=active_path,
+            size=48,
+        )
+        self.artwork_badge.setPixmap(pixmap)
 
     def set_playback_state(self, is_playing: bool) -> None:
         self.btn_play_pause.setText("⏸" if is_playing else "▶")

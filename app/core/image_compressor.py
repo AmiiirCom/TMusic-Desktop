@@ -5,15 +5,15 @@ from PIL import Image
 
 logger = logging.getLogger("tmusic.core.image_compressor")
 
-# Constants for thumbnail compression
-THUMBNAIL_SIZE = (350, 350)
-JPEG_QUALITY = 70
-WEBP_QUALITY = 70
+# Enhanced crisp dimensions and high quality for album covers
+THUMBNAIL_SIZE = (500, 500)
+JPEG_QUALITY = 85
+WEBP_QUALITY = 85
 
 
 def compress_image(input_path: Path, output_path: Path, max_size: tuple[int, int] = THUMBNAIL_SIZE) -> Path | None:
     """
-    Compress an image to a smaller size and lower quality.
+    Compress an image to a balanced size with high quality lanczos resampling.
     Returns the output path if successful, None otherwise.
     """
     try:
@@ -23,25 +23,30 @@ def compress_image(input_path: Path, output_path: Path, max_size: tuple[int, int
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
 
-        # Resize maintaining aspect ratio
+        # Resize maintaining aspect ratio with high quality lanczos filter
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
 
         # Determine output format
         suffix = output_path.suffix.lower()
         if suffix in (".jpg", ".jpeg"):
-            format = "JPEG"
+            format_name = "JPEG"
             kwargs = {"quality": JPEG_QUALITY, "optimize": True}
         elif suffix == ".webp":
-            format = "WEBP"
+            format_name = "WEBP"
             kwargs = {"quality": WEBP_QUALITY, "method": 6}
         else:
-            format = "JPEG"
+            format_name = "JPEG"
             kwargs = {"quality": JPEG_QUALITY, "optimize": True}
             output_path = output_path.with_suffix(".jpg")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(output_path, format=format, **kwargs)
-        logger.debug("Compressed image: %s -> %s (size: %.1f KB)", input_path.name, output_path.name, output_path.stat().st_size / 1024)
+        img.save(output_path, format=format_name, **kwargs)
+        logger.debug(
+            "Compressed image: %s -> %s (size: %.1f KB)",
+            input_path.name,
+            output_path.name,
+            output_path.stat().st_size / 1024,
+        )
         return output_path
 
     except Exception as exc:
@@ -68,18 +73,18 @@ def compress_image_from_pil(img: Image.Image, output_path: Path, max_size: tuple
 
         suffix = output_path.suffix.lower()
         if suffix in (".jpg", ".jpeg"):
-            format = "JPEG"
+            format_name = "JPEG"
             kwargs = {"quality": JPEG_QUALITY, "optimize": True}
         elif suffix == ".webp":
-            format = "WEBP"
+            format_name = "WEBP"
             kwargs = {"quality": WEBP_QUALITY, "method": 6}
         else:
-            format = "JPEG"
+            format_name = "JPEG"
             kwargs = {"quality": JPEG_QUALITY, "optimize": True}
             output_path = output_path.with_suffix(".jpg")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(output_path, format=format, **kwargs)
+        img.save(output_path, format=format_name, **kwargs)
         return output_path
     except Exception as exc:
         logger.warning("Failed to compress PIL image: %s", exc)

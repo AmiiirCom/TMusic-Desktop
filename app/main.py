@@ -1,5 +1,3 @@
-# app/main.py
-
 import argparse
 import logging
 import os
@@ -135,6 +133,7 @@ class MainWindow(QMainWindow):
         self._meter.stats_updated.connect(self._main_view.set_network_stats)
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
+        self._telegram.cover_downloaded.connect(self._player.update_track_cover)
 
         # System Tray
         self._tray = TrayService(self, self._player, self._config)

@@ -99,6 +99,7 @@ class TrackItemWidget(QWidget):
         super().__init__(parent)
         self.track = track
         self._is_active = is_active
+        self._cover_path: str | None = track.cover_path
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._init_ui()
@@ -182,12 +183,35 @@ class TrackItemWidget(QWidget):
             self.duration_label.setStyleSheet("color: #7f91a4; font-size: 13px; font-weight: bold; background: transparent; border: none;")
             self.meta_sub_label.setStyleSheet("color: #5d6e80; font-size: 11px; background: transparent; border: none;")
 
-        self.update_cover(self.track.cover_path)
+        self.update_cover(self._cover_path)
 
     def update_cover(self, cover_path: str | None) -> None:
+        if cover_path:
+            self._cover_path = cover_path
+            # Synchronize internal track instance with downloaded cover
+            if self.track.cover_path != cover_path:
+                self.track = Track(
+                    id=self.track.id,
+                    chat_id=self.track.chat_id,
+                    message_id=self.track.message_id,
+                    file_id=self.track.file_id,
+                    title=self.track.title,
+                    artist=self.track.artist,
+                    duration_seconds=self.track.duration_seconds,
+                    size_bytes=self.track.size_bytes,
+                    file_name=self.track.file_name,
+                    mime_type=self.track.mime_type,
+                    local_path=self.track.local_path,
+                    is_downloaded=self.track.is_downloaded,
+                    date_timestamp=self.track.date_timestamp,
+                    minithumbnail_data=self.track.minithumbnail_data,
+                    cover_file_id=self.track.cover_file_id,
+                    cover_path=cover_path,
+                )
+
         pixmap = create_rounded_cover_pixmap(
             minithumb_data=self.track.minithumbnail_data,
-            cover_path=cover_path or self.track.cover_path,
+            cover_path=self._cover_path,
             size=44,
             is_active=self._is_active,
         )
