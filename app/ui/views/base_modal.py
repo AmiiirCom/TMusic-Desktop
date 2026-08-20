@@ -1,9 +1,16 @@
 from typing import Any
-from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+)
 from PySide6.QtGui import QColor, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -15,10 +22,13 @@ from app.ui.utils.icons import get_svg_icon
 
 
 class BaseModalDialog(QDialog):
-    """Full-window modal backdrop dialog with vector SVG close button."""
+    """Full-window modal backdrop dialog with reliable lifecycle and smooth exit transitions."""
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._is_closing = False
+        self._fade_anim: QPropertyAnimation | None = None
+
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
@@ -113,6 +123,11 @@ class BaseModalDialog(QDialog):
 
         root_layout.addWidget(self.card_frame)
 
+        # Entire dialog opacity effect (smoothly fades backdrop + card together)
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._opacity_effect.setOpacity(0.0)
+
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 160))
@@ -125,6 +140,44 @@ class BaseModalDialog(QDialog):
             p_win = parent.window()
             g_pos = p_win.mapToGlobal(QPoint(0, 0))
             self.setGeometry(g_pos.x(), g_pos.y(), p_win.width(), p_win.height())
+
+        self._is_closing = False
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(160)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._fade_anim.start()
+
+    def _finish_close(self, result_code: int) -> None:
+        """Ensure modal dialog is cleanly closed and event loop dismissed."""
+        super().done(result_code)
+
+    def reject(self) -> None:
+        if self._is_closing:
+            return
+        self._is_closing = True
+
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(120)
+        self._fade_anim.setStartValue(self._opacity_effect.opacity())
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._fade_anim.finished.connect(lambda: self._finish_close(QDialog.DialogCode.Rejected))
+        self._fade_anim.start()
+
+    def accept(self) -> None:
+        if self._is_closing:
+            return
+        self._is_closing = True
+
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(120)
+        self._fade_anim.setStartValue(self._opacity_effect.opacity())
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._fade_anim.finished.connect(lambda: self._finish_close(QDialog.DialogCode.Accepted))
+        self._fade_anim.start()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         click_pos = event.position().toPoint()

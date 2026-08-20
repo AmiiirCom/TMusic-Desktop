@@ -1,9 +1,15 @@
 import logging
 from pathlib import Path
 import shutil
-from PySide6.QtCore import Slot
-from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Slot
+from PySide6.QtGui import QCloseEvent, QCursor, QMouseEvent
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.cache.service import CacheManager
 from app.config import AppConfig
@@ -17,6 +23,8 @@ from app.settings.service import ProxySettings, SettingsService
 from app.telegram.adapter import TDLibAdapter
 from app.telegram.enums import AuthState
 from app.telegram.service import TelegramService
+from app.ui.components.title_bar import CustomTitleBar
+from app.ui.utils.animations import fade_in_widget
 from app.ui.views.login_view import LoginView
 from app.ui.views.lyrics_dialog import LyricsDialog
 from app.ui.views.main_view import MainView
@@ -26,6 +34,8 @@ from app.ui.views.track_info_dialog import TrackInfoDialog
 
 logger = logging.getLogger("tmusic.main_window")
 
+RESIZE_BORDER_MARGIN = 6
+
 
 def has_saved_telegram_session(config: AppConfig) -> bool:
     td_binlog = config.tdlib_dir / "td.binlog"
@@ -33,7 +43,10 @@ def has_saved_telegram_session(config: AppConfig) -> bool:
 
 
 class MainWindow(QMainWindow):
-    """Root main window coordinating views, dialogs, tray service, and background services."""
+    """
+    Root frameless application window featuring custom Telegram-styled titlebar,
+    subtle 10px rounded corners, native 8-direction edge resizing, and tray integration.
+    """
 
     def __init__(
         self,
@@ -57,11 +70,34 @@ class MainWindow(QMainWindow):
         self._tdlib_adapter = tdlib_adapter
         self._is_quitting = False
 
+        # Set frameless window and translucent background for rounded corners
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle(f"{config.app_name} Desktop")
         self.resize(1100, 750)
+        self.setMinimumSize(850, 560)
+        self.setMouseTracking(True)
 
-        self._central_stack = QStackedWidget(self)
-        self.setCentralWidget(self._central_stack)
+        # Root Container with subtle rounded border
+        self._root_widget = QWidget(self)
+        self._root_widget.setObjectName("rootContainer")
+        self._root_widget.setMouseTracking(True)
+        self.setCentralWidget(self._root_widget)
+
+        root_layout = QVBoxLayout(self._root_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # 1. Custom Telegram-styled TitleBar
+        self._title_bar = CustomTitleBar(self._config, self)
+        self._title_bar.minimize_requested.connect(self.showMinimized)
+        self._title_bar.maximize_restore_requested.connect(self._toggle_maximize_restore)
+        self._title_bar.close_requested.connect(self.close)
+        root_layout.addWidget(self._title_bar)
+
+        # 2. Central Content Stack
+        self._central_stack = QStackedWidget(self._root_widget)
+        self._central_stack.setMouseTracking(True)
 
         self._main_view = MainView(self._config, self)
         self._login_view = LoginView(self)
@@ -74,6 +110,9 @@ class MainWindow(QMainWindow):
         else:
             self._central_stack.setCurrentWidget(self._login_view)
 
+        root_layout.addWidget(self._central_stack, stretch=1)
+
+        self._apply_window_frame_style(False)
         self._connect_signals()
         self._restore_preferences()
 
@@ -83,6 +122,19 @@ class MainWindow(QMainWindow):
 
         self._telegram.load_cached_state()
         self._apply_saved_proxy()
+
+    def _apply_window_frame_style(self, is_max: bool) -> None:
+        """Apply subtle rounded corners when normal, and sharp edges when maximized."""
+        radius = "0px" if is_max else "10px"
+        border = "none" if is_max else "1px solid #242f3d"
+        self._root_widget.setStyleSheet(f"""
+            QWidget#rootContainer {{
+                background-color: #0e1621;
+                border: {border};
+                border-radius: {radius};
+            }}
+        """)
+        self._title_bar.set_maximized(is_max)
 
     def _connect_signals(self) -> None:
         # MainView events
@@ -145,6 +197,78 @@ class MainWindow(QMainWindow):
         self._telegram.tracks_deleted.connect(self._main_view.remove_tracks)
         self._telegram.tracks_deleted.connect(self._player.remove_from_playlist)
         self._telegram.search_results_received.connect(self._main_view.on_full_search_results)
+
+    def _toggle_maximize_restore(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+            self._apply_window_frame_style(False)
+        else:
+            self.showMaximized()
+            self._apply_window_frame_style(True)
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._apply_window_frame_style(self.isMaximized())
+        super().changeEvent(event)
+
+    # ------------------------------------------------------------------
+    # 8-Direction Native-like Border Resizing for Frameless Window
+    # ------------------------------------------------------------------
+
+    def _calculate_resize_edge(self, pos: QPoint) -> Qt.Edge | None:
+        if self.isMaximized():
+            return None
+
+        m = RESIZE_BORDER_MARGIN
+        rect = self.rect()
+        x, y = pos.x(), pos.y()
+        w, h = rect.width(), rect.height()
+
+        on_left = x < m
+        on_right = x > w - m
+        on_top = y < m
+        on_bottom = y > h - m
+
+        if on_top and on_left:
+            return Qt.Edge.TopEdge | Qt.Edge.LeftEdge
+        if on_top and on_right:
+            return Qt.Edge.TopEdge | Qt.Edge.RightEdge
+        if on_bottom and on_left:
+            return Qt.Edge.BottomEdge | Qt.Edge.LeftEdge
+        if on_bottom and on_right:
+            return Qt.Edge.BottomEdge | Qt.Edge.RightEdge
+        if on_left:
+            return Qt.Edge.LeftEdge
+        if on_right:
+            return Qt.Edge.RightEdge
+        if on_top:
+            return Qt.Edge.TopEdge
+        if on_bottom:
+            return Qt.Edge.BottomEdge
+        return None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and not self.isMaximized():
+            edge = self._calculate_resize_edge(event.position().toPoint())
+            if edge and self.windowHandle():
+                self.windowHandle().startSystemResize(edge)
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if not self.isMaximized():
+            edge = self._calculate_resize_edge(event.position().toPoint())
+            if edge == (Qt.Edge.TopEdge | Qt.Edge.LeftEdge) or edge == (Qt.Edge.BottomEdge | Qt.Edge.RightEdge):
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            elif edge == (Qt.Edge.TopEdge | Qt.Edge.RightEdge) or edge == (Qt.Edge.BottomEdge | Qt.Edge.LeftEdge):
+                self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+            elif edge in (Qt.Edge.LeftEdge, Qt.Edge.RightEdge):
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            elif edge in (Qt.Edge.TopEdge, Qt.Edge.BottomEdge):
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
 
     def _restore_preferences(self) -> None:
         saved_vol = self._settings.preferences.volume
@@ -286,20 +410,25 @@ class MainWindow(QMainWindow):
         if track:
             self._telegram.toggle_track_like(track)
 
+    def _switch_main_stack(self, widget: QWidget) -> None:
+        if self._central_stack.currentWidget() != widget:
+            self._central_stack.setCurrentWidget(widget)
+            fade_in_widget(self._central_stack.currentWidget(), duration_ms=220)
+
     @Slot(str)
     def _on_auth_state_changed(self, state: str) -> None:
         match state:
             case AuthState.WAIT_PHONE_NUMBER | AuthState.LOGGING_OUT:
-                self._central_stack.setCurrentWidget(self._login_view)
+                self._switch_main_stack(self._login_view)
                 self._login_view.show_phone_step()
             case AuthState.WAIT_CODE:
-                self._central_stack.setCurrentWidget(self._login_view)
+                self._switch_main_stack(self._login_view)
                 self._login_view.show_code_step()
             case AuthState.WAIT_PASSWORD:
-                self._central_stack.setCurrentWidget(self._login_view)
+                self._switch_main_stack(self._login_view)
                 self._login_view.show_password_step()
             case AuthState.READY:
-                self._central_stack.setCurrentWidget(self._main_view)
+                self._switch_main_stack(self._main_view)
             case AuthState.CLOSED:
                 self._on_perform_logout()
 

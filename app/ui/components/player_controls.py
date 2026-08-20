@@ -14,7 +14,7 @@ SPEED_OPTIONS = (0.75, 1.0, 1.25, 1.5, 1.75)
 
 
 class PlayerControls(QWidget):
-    """Central playback buttons and seekable progress timeline with crisp SVG icons."""
+    """Central playback buttons and seekable progress timeline with pixel-perfect visual balance."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
@@ -28,30 +28,60 @@ class PlayerControls(QWidget):
         self._init_ui()
 
     def _init_ui(self) -> None:
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 17px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.08);
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 255, 255, 0.16);
+            }
+            QPushButton#btnPlayPause {
+                background-color: #2481cc;
+                border-radius: 21px;
+            }
+            QPushButton#btnPlayPause:hover {
+                background-color: #1d72b8;
+            }
+            QPushButton#btnPlayPause:pressed {
+                background-color: #175d96;
+            }
+        """)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         btns_layout = QHBoxLayout()
-        btns_layout.setSpacing(12)
+        btns_layout.setSpacing(10)
         btns_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # Previous Button (34x34 with 18px icon)
         self.btn_prev = QPushButton()
-        self.btn_prev.setIcon(get_svg_icon("previous", "#ffffff", 18))
+        self.btn_prev.setFixedSize(34, 34)
+        self.btn_prev.setIcon(get_svg_icon("previous", "#8192a5", 18))
         self.btn_prev.setIconSize(QSize(18, 18))
         self.btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_prev.clicked.connect(self.previous_clicked.emit)
 
+        # Primary Play/Pause Button (42x42 with 20px icon)
         self.btn_play_pause = QPushButton()
         self.btn_play_pause.setObjectName("btnPlayPause")
-        self.btn_play_pause.setIcon(get_svg_icon("play", "#ffffff", 18))
-        self.btn_play_pause.setIconSize(QSize(18, 18))
+        self.btn_play_pause.setFixedSize(42, 42)
+        self.btn_play_pause.setIcon(get_svg_icon("play", "#ffffff", 20))
+        self.btn_play_pause.setIconSize(QSize(20, 20))
         self.btn_play_pause.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_play_pause.clicked.connect(self.play_pause_clicked.emit)
 
+        # Next Button (34x34 with 18px icon)
         self.btn_next = QPushButton()
-        self.btn_next.setIcon(get_svg_icon("next", "#ffffff", 18))
+        self.btn_next.setFixedSize(34, 34)
+        self.btn_next.setIcon(get_svg_icon("next", "#8192a5", 18))
         self.btn_next.setIconSize(QSize(18, 18))
         self.btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_next.clicked.connect(self.next_clicked.emit)
@@ -65,7 +95,7 @@ class PlayerControls(QWidget):
         timeline_layout.setSpacing(8)
 
         self.pos_label = QLabel("00:00")
-        self.pos_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
+        self.pos_label.setStyleSheet("font-size: 11px; color: #7f91a4; min-width: 32px;")
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 1000)
@@ -73,7 +103,7 @@ class PlayerControls(QWidget):
         self.slider.sliderReleased.connect(self._on_released)
 
         self.dur_label = QLabel("00:00")
-        self.dur_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
+        self.dur_label.setStyleSheet("font-size: 11px; color: #7f91a4; min-width: 32px;")
 
         timeline_layout.addWidget(self.pos_label)
         timeline_layout.addWidget(self.slider)
@@ -82,7 +112,7 @@ class PlayerControls(QWidget):
 
     def set_playback_state(self, is_playing: bool) -> None:
         icon_name = "pause" if is_playing else "play"
-        self.btn_play_pause.setIcon(get_svg_icon(icon_name, "#ffffff", 18))
+        self.btn_play_pause.setIcon(get_svg_icon(icon_name, "#ffffff", 20))
 
     def set_position(self, pos_ms: int) -> None:
         if not self._is_dragging and self._duration_ms > 0:

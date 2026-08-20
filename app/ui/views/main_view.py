@@ -1,5 +1,6 @@
 import logging
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,15 +18,17 @@ from app.models.chat import FAVORITES_CHAT_ID, OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
 from app.settings.service import ProxySettings
+from app.ui.components.marquee_label import MarqueeLabel
 from app.ui.components.player_bar import PlayerBar
 from app.ui.components.sidebar import SidebarWidget
 from app.ui.components.track_list_widget import TrackListWidget
+from app.ui.utils.animations import fade_in_widget
 
 logger = logging.getLogger("tmusic.ui.mainview")
 
 
 class MainView(QWidget):
-    """Main dashboard combining responsive sidebar, track library view, and bottom player bar."""
+    """Main dashboard combining responsive sidebar, track library view, and animated stack transitions."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
@@ -62,12 +65,15 @@ class MainView(QWidget):
         root_layout.setSpacing(0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
+        # 1. Left Sidebar
         self.sidebar = SidebarWidget(self)
         self.sidebar.settings_requested.connect(self.settings_requested.emit)
         self.sidebar.chat_selected.connect(self._on_internal_chat_selected)
         self.sidebar.chat_search_input.textChanged.connect(self._on_chat_search_text_changed)
 
+        # 2. Right Content Area
         content_area = QWidget(self)
         content_area.setStyleSheet("background-color: #0e1621;")
         content_layout = QVBoxLayout(content_area)
@@ -81,8 +87,17 @@ class MainView(QWidget):
         header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(16)
 
-        self.selected_chat_title = QLabel(self.tr("No playlist selected"))
-        self.selected_chat_title.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: bold;")
+        # Sliding Marquee Channel Title in Topbar
+        self.selected_chat_title = MarqueeLabel(
+            self.tr("No playlist selected"),
+            fade_width=20,
+            speed_px_per_sec=30,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        self.selected_chat_title.setFixedHeight(24)
+        title_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
+        self.selected_chat_title.setFont(title_font)
+        self.selected_chat_title.setTextColor("#ffffff")
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(self.tr("Search title or artist..."))
@@ -102,8 +117,7 @@ class MainView(QWidget):
         self.search_input.hide()
         self.search_input.textChanged.connect(self._on_search_text_changed)
 
-        header_layout.addWidget(self.selected_chat_title)
-        header_layout.addStretch()
+        header_layout.addWidget(self.selected_chat_title, stretch=1)
         header_layout.addWidget(self.search_input)
         content_layout.addWidget(self.chat_header)
 
@@ -226,10 +240,10 @@ class MainView(QWidget):
 
         if not tracks:
             self.placeholder_msg.setText(self.tr("No results found for your search."))
-            self.content_stack.setCurrentIndex(0)
+            self._switch_content_page(0)
         else:
             self.track_list.set_tracks(tracks, has_more=False)
-            self.content_stack.setCurrentIndex(1)
+            self._switch_content_page(1)
             q = self.search_input.text().strip()
             if q:
                 self.track_list.filter_tracks(q)
@@ -237,7 +251,7 @@ class MainView(QWidget):
     def restore_normal_tracks(self) -> None:
         if self._is_searching and self._original_tracks:
             self.track_list.set_tracks(self._original_tracks, has_more=True)
-            self.content_stack.setCurrentIndex(1)
+            self._switch_content_page(1)
             self._is_searching = False
             self._original_tracks = []
         elif not self._original_tracks:
@@ -247,7 +261,7 @@ class MainView(QWidget):
                 else self.tr("No audio tracks found in this playlist.")
             )
             self.placeholder_msg.setText(empty_text)
-            self.content_stack.setCurrentIndex(0)
+            self._switch_content_page(0)
 
     def _on_internal_chat_selected(self, chat: OwnedChat) -> None:
         self._active_chat = chat
@@ -259,12 +273,19 @@ class MainView(QWidget):
         self.search_input.clear()
         self.search_input.show()
         self._search_timer.stop()
-        self.placeholder_msg.setText(self.tr("Loading tracks..."))
-        self.content_stack.setCurrentIndex(0)
+        loading_text = self.tr("Loading tracks...")
+        self.placeholder_msg.setText(loading_text)
+        self._switch_content_page(0)
         self.chat_selected.emit(chat)
         self._is_searching = False
         self._original_tracks = []
         self.sidebar.chat_list.set_active_chat(chat.id)
+
+    def _switch_content_page(self, index: int) -> None:
+        """Switch content stack page with smooth fade-in animation."""
+        if self.content_stack.currentIndex() != index:
+            self.content_stack.setCurrentIndex(index)
+            fade_in_widget(self.content_stack.currentWidget(), duration_ms=160)
 
     def set_initial_tracks(self, tracks: list[Track], has_more: bool) -> None:
         if self._active_chat is None:
@@ -277,11 +298,11 @@ class MainView(QWidget):
                 else self.tr("No audio tracks found in this playlist.")
             )
             self.placeholder_msg.setText(empty_text)
-            self.content_stack.setCurrentIndex(0)
+            self._switch_content_page(0)
             return
 
         self.track_list.set_tracks(tracks, has_more=has_more)
-        self.content_stack.setCurrentIndex(1)
+        self._switch_content_page(1)
         self._original_tracks = list(tracks)
         self._is_searching = False
 
@@ -293,7 +314,7 @@ class MainView(QWidget):
         if not self._is_searching:
             self._original_tracks.extend(new_tracks)
         if self.track_list.count() > 0 and self.content_stack.currentIndex() == 0:
-            self.content_stack.setCurrentIndex(1)
+            self._switch_content_page(1)
 
     def prepend_tracks(self, new_tracks: list[Track]) -> None:
         if self._active_chat is None:
@@ -303,7 +324,7 @@ class MainView(QWidget):
         if not self._is_searching:
             self._original_tracks = new_tracks + self._original_tracks
         if self.track_list.count() > 0 and self.content_stack.currentIndex() == 0:
-            self.content_stack.setCurrentIndex(1)
+            self._switch_content_page(1)
 
     def remove_tracks(self, chat_id: int, deleted_track_ids: list[str]) -> None:
         is_current_chat = self._active_chat is not None and self._active_chat.id == chat_id
@@ -321,7 +342,7 @@ class MainView(QWidget):
                     else self.tr("No audio tracks found in this playlist.")
                 )
                 self.placeholder_msg.setText(empty_text)
-                self.content_stack.setCurrentIndex(0)
+                self._switch_content_page(0)
 
     def _on_load_more_tracks(self) -> None:
         if self._active_chat is not None and not self._is_active_chat_favorites:
@@ -337,7 +358,7 @@ class MainView(QWidget):
     def _perform_full_search(self) -> None:
         query = self.search_input.text().strip()
         if self._active_chat is not None and query:
-            self.content_stack.setCurrentIndex(2)
+            self._switch_content_page(2)
             self.search_full_requested.emit(str(self._active_chat.id), query)
 
     def _on_chat_search_text_changed(self, text: str) -> None:

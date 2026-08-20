@@ -1,20 +1,21 @@
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
-    QLabel,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from app.ui.components.marquee_label import MarqueeLabel
 from app.ui.utils.icons import get_svg_icon
 from app.ui.views.base_modal import BaseModalDialog
 
 
 class LyricsDialog(BaseModalDialog):
-    """Frameless unified modal displaying song lyrics with SVG copy action."""
+    """Frameless unified modal displaying song lyrics with sliding marquee title."""
 
     def __init__(self, title: str, artist: str, lyrics: str, parent: QWidget | None = None) -> None:
         super().__init__(title="Lyrics", parent=parent)
@@ -26,11 +27,19 @@ class LyricsDialog(BaseModalDialog):
         header_layout = QVBoxLayout()
         header_layout.setSpacing(2)
 
-        title_lbl = QLabel(title)
-        title_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #6ab3f3;")
+        # Sliding Marquee Title
+        title_lbl = MarqueeLabel(title, fade_width=16, speed_px_per_sec=30)
+        title_lbl.setFixedHeight(22)
+        t_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
+        title_lbl.setFont(t_font)
+        title_lbl.setTextColor("#6ab3f3")
 
-        artist_lbl = QLabel(artist)
-        artist_lbl.setStyleSheet("font-size: 12px; color: #7f91a4;")
+        # Sliding Marquee Artist
+        artist_lbl = MarqueeLabel(artist, fade_width=14, speed_px_per_sec=26)
+        artist_lbl.setFixedHeight(18)
+        a_font = QFont("Segoe UI", 9)
+        artist_lbl.setFont(a_font)
+        artist_lbl.setTextColor("#7f91a4")
 
         header_layout.addWidget(title_lbl)
         header_layout.addWidget(artist_lbl)

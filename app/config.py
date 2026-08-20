@@ -48,6 +48,7 @@ class AppConfig:
     app_version: str = "0.1.0"
     organization_name: str = "TMusicOrg"
     organization_domain: str = "tmusic.local"
+    auther: str = "AmiiirCom"
 
     # Legacy paths for backward compatibility
     root_dir: Path = field(default=_ROOT_DIR)

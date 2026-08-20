@@ -1,7 +1,6 @@
-from pathlib import Path
 from typing import Any
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QFont, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -14,88 +13,13 @@ from PySide6.QtWidgets import (
 )
 
 from app.models.track import Track
+from app.ui.components.marquee_label import MarqueeLabel
 from app.ui.utils.icons import get_svg_icon
-
-
-def create_rounded_cover_pixmap(
-    minithumb_data: bytes | None = None,
-    cover_path: str | None = None,
-    size: int = 44,
-    is_active: bool = False,
-) -> QPixmap:
-    scale = 2
-    render_size = size * scale
-    target_pixmap = QPixmap(render_size, render_size)
-    target_pixmap.fill(QColor(0, 0, 0, 0))
-
-    painter = QPainter(target_pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-    path = QPainterPath()
-    path.addRoundedRect(0, 0, render_size, render_size, 8 * scale, 8 * scale)
-    painter.setClipPath(path)
-
-    has_drawn = False
-
-    if cover_path and Path(cover_path).exists():
-        src = QPixmap(str(cover_path))
-        if not src.isNull():
-            scaled = src.scaled(
-                render_size,
-                render_size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            x = (scaled.width() - render_size) // 2
-            y = (scaled.height() - render_size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
-            has_drawn = True
-
-    if not has_drawn and minithumb_data:
-        src = QPixmap()
-        if src.loadFromData(minithumb_data):
-            scaled = src.scaled(
-                render_size,
-                render_size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            x = (scaled.width() - render_size) // 2
-            y = (scaled.height() - render_size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
-            has_drawn = True
-
-    if not has_drawn:
-        bg_color = QColor("#2481cc" if is_active else "#2b5278")
-        painter.fillRect(0, 0, render_size, render_size, bg_color)
-        painter.setPen(QColor("#ffffff"))
-        font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(target_pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
-
-    if is_active:
-        badge_size = 18 * scale
-        badge_x = render_size - badge_size - (3 * scale)
-        badge_y = render_size - badge_size - (3 * scale)
-
-        painter.setClipping(False)
-        painter.setBrush(QColor(79, 174, 78, 230))
-        painter.setPen(QPen(QColor("#ffffff"), 1 * scale))
-        painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
-
-        painter.setPen(QColor("#ffffff"))
-        font_icon = QFont("Segoe UI Emoji", 9 * scale, QFont.Weight.Bold)
-        painter.setFont(font_icon)
-        painter.drawText(badge_x, badge_y, badge_size, badge_size, Qt.AlignmentFlag.AlignCenter, "🔊")
-
-    painter.end()
-    target_pixmap.setDevicePixelRatio(scale)
-    return target_pixmap
+from app.ui.utils.pixmaps import create_rounded_cover_pixmap
 
 
 class TrackItemWidget(QWidget):
-    """Custom Telegram-styled track list item with like button and smooth visual transitions."""
+    """Custom Telegram-styled track list item with transparent backgrounds and marquee labels."""
 
     like_clicked = Signal(Track)
 
@@ -105,55 +29,88 @@ class TrackItemWidget(QWidget):
         self._is_active = is_active
         self._cover_path: str | None = track.cover_path
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._init_ui()
 
     def _init_ui(self) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(12)
 
-        self.cover_label = QLabel()
+        # Left: Cover Artwork (44x44)
+        self.cover_label = QLabel(self)
         self.cover_label.setFixedSize(44, 44)
-        self.cover_label.setStyleSheet("background: transparent; border: none;")
+        self.cover_label.setStyleSheet("background: transparent; background-color: transparent; border: none;")
 
+        # Center: Title & Artist
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(3)
+        info_layout.setSpacing(2)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        self.title_label = QLabel(self.track.display_title)
-        self.artist_label = QLabel(self.track.display_artist)
+        self.title_label = MarqueeLabel(
+            self.track.display_title,
+            fade_width=14,
+            speed_px_per_sec=28,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            parent=self,
+        )
+        self.title_label.setFixedHeight(20)
+        title_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        self.title_label.setFont(title_font)
+        self.title_label.setTextColor("#ffffff")
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.title_label.setStyleSheet("background: transparent; background-color: transparent; border: none;")
+
+        self.artist_label = MarqueeLabel(
+            self.track.display_artist,
+            fade_width=12,
+            speed_px_per_sec=24,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            parent=self,
+        )
+        self.artist_label.setFixedHeight(16)
+        artist_font = QFont("Segoe UI", 9)
+        self.artist_label.setFont(artist_font)
+        self.artist_label.setTextColor("#8192a5")
+        self.artist_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.artist_label.setStyleSheet("background: transparent; background-color: transparent; border: none;")
 
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.artist_label)
 
-        self.btn_like = QPushButton()
+        # Right-Center: Like Action Button (32x32)
+        self.btn_like = QPushButton(self)
         self.btn_like.setFixedSize(32, 32)
         self.btn_like.setIconSize(QSize(16, 16))
         self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_like.clicked.connect(self._on_like_clicked)
 
+        # Far-Right: Duration & Date/Size Metadata
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
-        self.duration_label = QLabel(self.track.formatted_duration)
-        self.duration_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.duration_label = QLabel(self.track.formatted_duration, self)
+        self.duration_label.setStyleSheet(
+            "background: transparent; background-color: transparent; border: none; font-size: 12px; font-weight: bold; color: #8192a5;"
+        )
 
         meta_text = (
             f"{self.track.formatted_size} • {self.track.formatted_date}"
             if self.track.formatted_date
             else self.track.formatted_size
         )
-        self.meta_sub_label = QLabel(meta_text)
-        self.meta_sub_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.meta_sub_label = QLabel(meta_text, self)
+        self.meta_sub_label.setStyleSheet(
+            "background: transparent; background-color: transparent; border: none; font-size: 10px; color: #5d6e80;"
+        )
 
         meta_layout.addWidget(self.duration_label)
         meta_layout.addWidget(self.meta_sub_label)
 
         layout.addWidget(self.cover_label)
-        layout.addLayout(info_layout)
-        layout.addStretch()
+        layout.addLayout(info_layout, stretch=1)
         layout.addWidget(self.btn_like)
         layout.addLayout(meta_layout)
 
@@ -201,24 +158,30 @@ class TrackItemWidget(QWidget):
                 QPushButton {
                     background: transparent;
                     border: none;
+                    border-radius: 16px;
                 }
                 QPushButton:hover {
-                    background-color: rgba(229, 57, 53, 0.15);
-                    border-radius: 16px;
+                    background-color: rgba(229, 57, 53, 0.18);
+                }
+                QPushButton:pressed {
+                    background-color: rgba(229, 57, 53, 0.28);
                 }
             """)
         else:
-            self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 16))
+            self.btn_like.setIcon(get_svg_icon("heart_outline", "#8192a5", 16))
             tip = f"{self.tr('Like')} ({self.track.heart_count})" if self.track.heart_count > 0 else self.tr("Like")
             self.btn_like.setToolTip(tip)
             self.btn_like.setStyleSheet("""
                 QPushButton {
                     background: transparent;
                     border: none;
+                    border-radius: 16px;
                 }
                 QPushButton:hover {
-                    background-color: rgba(255, 255, 255, 0.1);
-                    border-radius: 16px;
+                    background-color: rgba(255, 255, 255, 0.12);
+                }
+                QPushButton:pressed {
+                    background-color: rgba(255, 255, 255, 0.2);
                 }
             """)
 
@@ -230,11 +193,16 @@ class TrackItemWidget(QWidget):
                     border: 1.5px solid #2481cc;
                     border-radius: 8px;
                 }
+                QLabel {
+                    background: transparent;
+                    background-color: transparent;
+                    border: none;
+                }
             """)
-            self.title_label.setStyleSheet("color: #52a3ff; font-size: 14px; font-weight: bold; background: transparent; border: none;")
-            self.artist_label.setStyleSheet("color: #9ec6ed; font-size: 12px; background: transparent; border: none;")
-            self.duration_label.setStyleSheet("color: #52a3ff; font-size: 13px; font-weight: bold; background: transparent; border: none;")
-            self.meta_sub_label.setStyleSheet("color: #8db3d6; font-size: 11px; background: transparent; border: none;")
+            self.title_label.setTextColor("#52a3ff")
+            self.artist_label.setTextColor("#9ec6ed")
+            self.duration_label.setStyleSheet("background: transparent; color: #52a3ff; font-size: 12px; font-weight: bold;")
+            self.meta_sub_label.setStyleSheet("background: transparent; color: #8db3d6; font-size: 10px;")
         else:
             self.setStyleSheet("""
                 TrackItemWidget {
@@ -244,12 +212,18 @@ class TrackItemWidget(QWidget):
                 }
                 TrackItemWidget:hover {
                     background-color: #17212b;
+                    border-color: #202b36;
+                }
+                QLabel {
+                    background: transparent;
+                    background-color: transparent;
+                    border: none;
                 }
             """)
-            self.title_label.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold; background: transparent; border: none;")
-            self.artist_label.setStyleSheet("color: #7f91a4; font-size: 12px; background: transparent; border: none;")
-            self.duration_label.setStyleSheet("color: #7f91a4; font-size: 13px; font-weight: bold; background: transparent; border: none;")
-            self.meta_sub_label.setStyleSheet("color: #5d6e80; font-size: 11px; background: transparent; border: none;")
+            self.title_label.setTextColor("#ffffff")
+            self.artist_label.setTextColor("#8192a5")
+            self.duration_label.setStyleSheet("background: transparent; color: #8192a5; font-size: 12px; font-weight: bold;")
+            self.meta_sub_label.setStyleSheet("background: transparent; color: #5d6e80; font-size: 10px;")
 
         self.update_cover(self._cover_path)
 
@@ -318,7 +292,7 @@ class TrackListWidget(QListWidget):
             QListWidget::item {
                 border-bottom: 1px solid #141c26;
                 background-color: transparent;
-                padding: 2px 6px;
+                padding: 1px 4px;
             }
             QListWidget::item:hover {
                 background-color: transparent;
@@ -367,7 +341,7 @@ class TrackListWidget(QListWidget):
                 is_active = track.id == self._active_track_id
                 widget = TrackItemWidget(track, is_active=is_active)
                 widget.like_clicked.connect(self.track_like_toggled.emit)
-                item.setSizeHint(widget.sizeHint())
+                item.setSizeHint(QSize(300, 56))
                 self.addItem(item)
                 self.setItemWidget(item, widget)
                 self._track_widgets[track.id] = widget
@@ -389,7 +363,7 @@ class TrackListWidget(QListWidget):
                 is_active = track.id == self._active_track_id
                 widget = TrackItemWidget(track, is_active=is_active)
                 widget.like_clicked.connect(self.track_like_toggled.emit)
-                item.setSizeHint(widget.sizeHint())
+                item.setSizeHint(QSize(300, 56))
                 self.insertItem(idx, item)
                 self.setItemWidget(item, widget)
                 self._track_widgets[track.id] = widget
@@ -514,7 +488,7 @@ class TrackListWidget(QListWidget):
             is_active = track.id == self._active_track_id
             widget = TrackItemWidget(track, is_active=is_active)
             widget.like_clicked.connect(self.track_like_toggled.emit)
-            item.setSizeHint(widget.sizeHint())
+            item.setSizeHint(QSize(300, 56))
             self.addItem(item)
             self.setItemWidget(item, widget)
             self._track_widgets[track.id] = widget

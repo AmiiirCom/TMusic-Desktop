@@ -11,7 +11,7 @@ VAZIRMATN_BOLD_URL = "https://raw.githubusercontent.com/rastikerdar/vazirmatn/ma
 
 
 def setup_application_fonts(app: QApplication, resources_dir: Path) -> None:
-    """Download (if missing) and register Vazirmatn Persian fonts into Qt."""
+    """Download (if missing) and register Vazirmatn Persian fonts into Qt with valid point size."""
     fonts_dir = resources_dir / "fonts"
     fonts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -36,7 +36,8 @@ def setup_application_fonts(app: QApplication, resources_dir: Path) -> None:
             families = QFontDatabase.applicationFontFamilies(font_id)
             logger.debug("Registered font family: %s", families)
 
-    # Apply Vazirmatn as the default Qt Application font
-    app_font = QFont("Vazirmatn", 10)
+    # Apply Vazirmatn / Segoe UI as the default Qt Application font with valid positive point size (10pt)
+    app_font = QFont("Segoe UI", 10)
+    app_font.setFamilies(["Segoe UI", "Vazirmatn", "Tahoma", "Arial"])
     app_font.setStyleHint(QFont.StyleHint.SansSerif)
     app.setFont(app_font)

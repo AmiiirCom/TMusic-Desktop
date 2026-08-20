@@ -1,44 +1,87 @@
-from enum import StrEnum
-from PySide6.QtCore import QByteArray, QSize, Qt
+from PySide6.QtCore import QByteArray, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-# Consistent 24x24 viewBox, stroke-width=2, round caps and joins
+# Valid W3C SVG vector icons with 0 truncation errors
 SVG_ICONS: dict[str, str] = {
+    "app_logo": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">'
+        '<circle cx="50" cy="50" r="46" fill="url(#grad)" stroke="#ffffff" stroke-width="2.5"/>'
+        '<defs>'
+        '<linearGradient id="grad" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">'
+        '<stop offset="0%" stop-color="#2a96e8"/>'
+        '<stop offset="100%" stop-color="#196cb3"/>'
+        '</linearGradient>'
+        '</defs>'
+        '<path d="M40 68V34l28-7v34" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>'
+        '<circle cx="33" cy="68" r="8" fill="#ffffff"/>'
+        '<circle cx="61" cy="61" r="8" fill="#ffffff"/>'
+        '<path d="M72 44c4 3 6 8 6 13" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" opacity="0.8"/>'
+        '<path d="M78 37c7 5 11 13 11 20" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" opacity="0.5"/>'
+        '</svg>'
+    ),
+    "window_minimize": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<line x1="5" y1="12" x2="19" y2="12"></line></svg>'
+    ),
+    "window_maximize": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="4.5" y="4.5" width="15" height="15" rx="1.5"></rect></svg>'
+    ),
+    "window_restore": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M8 4.5h11a1.5 1.5 0 0 1 1.5 1.5v11"></path>'
+        '<rect x="3.5" y="8" width="12.5" height="12.5" rx="1.5"></rect></svg>'
+    ),
+    "music": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M9 18V5l12-2v13"></path>'
+        '<circle cx="6" cy="18" r="3"></circle>'
+        '<circle cx="18" cy="16" r="3"></circle></svg>'
+    ),
+    "equalizer": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="{color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<line x1="18" y1="20" x2="18" y2="10"></line>'
+        '<line x1="12" y1="20" x2="12" y2="4"></line>'
+        '<line x1="6" y1="20" x2="6" y2="14"></line></svg>'
+    ),
     "play": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{color}" '
         'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<polygon points="6 3 20 12 6 21 6 3"></polygon></svg>'
+        '<polygon points="7.5 4.5 19.5 12 7.5 19.5 7.5 4.5"></polygon></svg>'
     ),
     "pause": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{color}" '
         'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<rect x="6" y="4" width="4" height="16" rx="1"></rect>'
-        '<rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>'
+        '<rect x="6" y="4" width="4" height="16" rx="1.2"></rect>'
+        '<rect x="14" y="4" width="4" height="16" rx="1.2"></rect></svg>'
     ),
     "next": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{color}" '
         'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<polygon points="5 4 15 12 5 20 5 4"></polygon>'
+        '<polygon points="5 4.5 15.5 12 5 19.5 5 4.5"></polygon>'
         '<line x1="19" y1="5" x2="19" y2="19"></line></svg>'
     ),
     "previous": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{color}" '
         'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<polygon points="19 20 9 12 19 4 19 20"></polygon>'
+        '<polygon points="19 19.5 8.5 12 19 4.5 19 19.5"></polygon>'
         '<line x1="5" y1="19" x2="5" y2="5"></line></svg>'
     ),
     "heart_outline": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
         'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2'
-        'A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>'
+        '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>'
     ),
     "heart_filled": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{color}" '
         'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2'
-        'A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>'
+        '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>'
     ),
     "settings": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
@@ -74,7 +117,7 @@ SVG_ICONS: dict[str, str] = {
         '<polyline points="14 2 14 8 20 8"></polyline>'
         '<line x1="16" y1="13" x2="8" y2="13"></line>'
         '<line x1="16" y1="17" x2="8" y2="17"></line>'
-        '<polyline points="10 9 9 9 8 9"></polyline></svg>'
+        '<line x1="10" y1="9" x2="8" y2="9"></line></svg>'
     ),
     "info": (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
@@ -118,17 +161,25 @@ SVG_ICONS: dict[str, str] = {
         'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
         '<polyline points="20 6 9 17 4 12"></polyline></svg>'
     ),
-    "music": (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
-        'stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<path d="M9 18V5l12-2v13"></path>'
-        '<circle cx="6" cy="18" r="3"></circle>'
-        '<circle cx="18" cy="16" r="3"></circle></svg>'
-    ),
 }
 
 
-def get_svg_pixmap(icon_name: str, color: str = "#ffffff", size: int = 24) -> QPixmap:
+def render_svg_to_painter(
+    painter: QPainter,
+    icon_name: str,
+    target_rect: QRectF | QRect,
+    color: str = "#ffffff",
+) -> None:
+    """Render a vector SVG icon directly into an active QPainter within target_rect."""
+    template = SVG_ICONS.get(icon_name)
+    if not template:
+        return
+    svg_content = template.format(color=color)
+    renderer = QSvgRenderer(QByteArray(svg_content.encode("utf-8")))
+    renderer.render(painter, QRectF(target_rect))
+
+
+def get_svg_pixmap(icon_name: str, color: str = "#8192a5", size: int = 24) -> QPixmap:
     """Render anti-aliased, high-DPI crisp SVG pixmap."""
     template = SVG_ICONS.get(icon_name)
     if not template:
@@ -154,7 +205,27 @@ def get_svg_pixmap(icon_name: str, color: str = "#ffffff", size: int = 24) -> QP
     return pixmap
 
 
-def get_svg_icon(icon_name: str, color: str = "#ffffff", size: int = 24) -> QIcon:
+def get_svg_icon(icon_name: str, color: str = "#8192a5", size: int = 24) -> QIcon:
     """Create a QIcon from the rendered SVG pixmap."""
     pixmap = get_svg_pixmap(icon_name, color=color, size=size)
     return QIcon(pixmap)
+
+
+def get_app_logo_pixmap(size: int = 80) -> QPixmap:
+    """Render the official vector TMusic application logo."""
+    template = SVG_ICONS["app_logo"]
+    renderer = QSvgRenderer(QByteArray(template.encode("utf-8")))
+
+    scale = 2
+    render_size = size * scale
+    pixmap = QPixmap(render_size, render_size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    renderer.render(painter)
+    painter.end()
+
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap

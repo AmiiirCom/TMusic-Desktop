@@ -1,4 +1,5 @@
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
 from app.models.chat import OwnedChat
 from app.models.user import TelegramUser
 from app.ui.components.chat_list_widget import OwnedChatListWidget
+from app.ui.components.marquee_label import MarqueeLabel
 from app.ui.utils.icons import get_svg_icon
 from app.ui.utils.pixmaps import create_circular_avatar_pixmap, create_connection_shield_pixmap
 
@@ -43,25 +45,17 @@ class SidebarWidget(QWidget):
                 border-bottom: 1px solid #17212b;
             }
             QLabel#userAvatar { background: transparent; border: none; }
-            QLabel#userName {
-                color: #ffffff;
-                font-size: 14px;
-                font-weight: bold;
-                background: transparent;
-                border: none;
-            }
             QPushButton#btnHeaderAction {
                 background-color: #17212b;
-                color: #6ab3f3;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 6px 10px;
-                border-radius: 6px;
+                border-radius: 17px;
                 border: 1px solid #2f3e50;
             }
             QPushButton#btnHeaderAction:hover {
                 background-color: #2b5278;
-                color: #ffffff;
+                border-color: #52a3ff;
+            }
+            QPushButton#btnHeaderAction:pressed {
+                background-color: #1b3854;
             }
         """)
 
@@ -75,13 +69,18 @@ class SidebarWidget(QWidget):
         self.user_avatar.setFixedSize(42, 42)
         self.user_avatar.setPixmap(create_circular_avatar_pixmap(None, None, "U", 42))
 
-        self.user_name_label = QLabel(self.tr("Telegram User"))
-        self.user_name_label.setObjectName("userName")
+        # Sliding Marquee User Profile Name
+        self.user_name_label = MarqueeLabel(self.tr("Telegram User"), fade_width=12, speed_px_per_sec=24)
+        self.user_name_label.setFixedHeight(22)
+        font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        self.user_name_label.setFont(font)
+        self.user_name_label.setTextColor("#ffffff")
 
         btn_settings = QPushButton()
         btn_settings.setObjectName("btnHeaderAction")
-        btn_settings.setIcon(get_svg_icon("settings", "#6ab3f3", 16))
-        btn_settings.setIconSize(QSize(16, 16))
+        btn_settings.setFixedSize(34, 34)
+        btn_settings.setIcon(get_svg_icon("settings", "#8192a5", 18))
+        btn_settings.setIconSize(QSize(18, 18))
         btn_settings.setToolTip(self.tr("Settings"))
         btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_settings.clicked.connect(self.settings_requested.emit)

@@ -1,4 +1,5 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -9,15 +10,29 @@ from PySide6.QtWidgets import (
 )
 
 from app.models.chat import OwnedChat, get_favorites_chat
+from app.ui.components.marquee_label import MarqueeLabel
 from app.ui.utils.pixmaps import create_chat_avatar_pixmap
 
 
 class ChatItemWidget(QWidget):
-    """Custom Telegram-style channel list item widget with clean typography."""
+    """Custom Telegram-style channel list item widget with fully transparent background rendering."""
 
     def __init__(self, chat: OwnedChat, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.chat = chat
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("""
+            ChatItemWidget {
+                background: transparent;
+                background-color: transparent;
+            }
+            QLabel {
+                background: transparent;
+                background-color: transparent;
+                border: none;
+            }
+        """)
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -25,27 +40,43 @@ class ChatItemWidget(QWidget):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(12)
 
-        self.avatar_label = QLabel()
+        # 1. Avatar Label with 100% transparent surface
+        self.avatar_label = QLabel(self)
         self.avatar_label.setFixedSize(42, 42)
         self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.avatar_label.setStyleSheet("background: transparent; background-color: transparent; border: none;")
         self.avatar_label.setPixmap(create_chat_avatar_pixmap(self.chat.title, self.chat.id, size=42))
 
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(3)
+        info_layout.setSpacing(2)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        title_label = QLabel(self.chat.title)
-        title_label.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
+        # 2. Sliding Marquee Channel Title
+        self.title_label = MarqueeLabel(
+            self.chat.title,
+            fade_width=14,
+            speed_px_per_sec=26,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            parent=self,
+        )
+        self.title_label.setFixedHeight(20)
+        title_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        self.title_label.setFont(title_font)
+        self.title_label.setTextColor("#ffffff")
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.title_label.setStyleSheet("background: transparent; background-color: transparent; border: none;")
 
-        type_label = QLabel(self.chat.type_display)
-        type_label.setStyleSheet("color: #7f91a4; font-size: 12px;")
+        # 3. Subtitle with explicitly transparent background
+        self.type_label = QLabel(self.chat.type_display, self)
+        self.type_label.setStyleSheet(
+            "background: transparent; background-color: transparent; border: none; color: #7f91a4; font-size: 12px;"
+        )
 
-        info_layout.addWidget(title_label)
-        info_layout.addWidget(type_label)
+        info_layout.addWidget(self.title_label)
+        info_layout.addWidget(self.type_label)
 
         layout.addWidget(self.avatar_label)
-        layout.addLayout(info_layout)
-        layout.addStretch()
+        layout.addLayout(info_layout, stretch=1)
 
 
 class OwnedChatListWidget(QListWidget):
@@ -118,7 +149,7 @@ class OwnedChatListWidget(QListWidget):
         for chat in chats:
             item = QListWidgetItem(self)
             widget = ChatItemWidget(chat)
-            item.setSizeHint(widget.sizeHint())
+            item.setSizeHint(QSize(260, 58))
             self.addItem(item)
             self.setItemWidget(item, widget)
             self._chat_widgets[chat.id] = widget

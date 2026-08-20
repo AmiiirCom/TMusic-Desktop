@@ -9,18 +9,19 @@ from app.core.security import CryptoManager
 from app.cache.service import CacheManager
 from app.telegram.adapter import TDLibAdapter
 
+
 def create_application(config: AppConfig) -> QApplication:
-    """Initialize and configure the Qt Application with Vazirmatn Font & Theme."""
+    """Initialize and configure the Qt Application with global LTR layout & Theme."""
     app = QApplication(sys.argv)
     app.setApplicationName(config.app_name)
     app.setApplicationVersion(config.app_version)
     app.setOrganizationName(config.organization_name)
     app.setOrganizationDomain(config.organization_domain)
 
-    # Set default RTL layout for Persian
-    app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    # Set universal Left-to-Right layout direction
+    app.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
-    # Setup & register Vazirmatn Persian fonts
+    # Setup & register application fonts
     setup_application_fonts(app, config.resources_dir)
 
     # Apply global Telegram Desktop theme stylesheet & slim scrollbars

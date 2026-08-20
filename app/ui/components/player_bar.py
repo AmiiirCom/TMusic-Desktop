@@ -1,5 +1,5 @@
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -14,13 +14,14 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.core.metadata import AudioMetadata
 from app.models.track import Track
+from app.ui.components.marquee_label import MarqueeLabel
 from app.ui.components.player_controls import SPEED_OPTIONS, PlayerControls
 from app.ui.utils.icons import get_svg_icon, get_svg_pixmap
 from app.ui.utils.pixmaps import create_rounded_cover_pixmap
 
 
 class PlayerBar(QFrame):
-    """Bottom audio player bar with track info, playback controls, and SVG sound adjustments."""
+    """Bottom audio player bar with balanced icons, marquee info, and controls."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
@@ -52,108 +53,86 @@ class PlayerBar(QFrame):
             QLabel {
                 color: #ffffff;
                 font-family: 'Segoe UI', 'Vazirmatn', sans-serif;
-            }
-            QPushButton {
                 background: transparent;
+                background-color: transparent;
                 border: none;
-                color: #ffffff;
-                font-size: 14px;
-                padding: 4px;
-                border-radius: 18px;
             }
-            QPushButton:hover { background-color: #242f3d; }
-            QPushButton#btnPlayPause {
-                background-color: #2481cc;
-                min-width: 38px;
-                min-height: 38px;
-                border-radius: 19px;
+            QPushButton#btnPlayerIconAction {
+                background-color: transparent;
+                border: none;
+                border-radius: 16px;
             }
-            QPushButton#btnPlayPause:hover { background-color: #1d72b8; }
+            QPushButton#btnPlayerIconAction:hover {
+                background-color: rgba(255, 255, 255, 0.08);
+            }
+            QPushButton#btnPlayerIconAction:pressed {
+                background-color: rgba(255, 255, 255, 0.16);
+            }
             QPushButton#btnPlayerLike {
                 background: transparent;
                 border: none;
-                border-radius: 16px;
-                min-width: 32px;
-                min-height: 32px;
+                border-radius: 17px;
             }
-            QPushButton#btnPlayerLike:hover { background-color: #242f3d; }
+            QPushButton#btnPlayerLike:hover {
+                background-color: rgba(229, 57, 53, 0.15);
+            }
+            QPushButton#btnPlayerLike:pressed {
+                background-color: rgba(229, 57, 53, 0.25);
+            }
             QPushButton#btnSpeed {
                 background-color: #242f3d;
                 color: #6ab3f3;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: bold;
                 padding: 4px 8px;
                 border-radius: 6px;
-                min-width: 44px;
+                border: 1px solid #2f3e50;
+                min-width: 38px;
+                max-height: 24px;
             }
             QPushButton#btnSpeed:hover {
-                background-color: #2f3e50;
+                background-color: #2b394a;
+                border-color: #3f546c;
                 color: #ffffff;
             }
-            QPushButton#btnLyrics {
-                background-color: #242f3d;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 4px 10px;
-                border-radius: 6px;
-                color: #ffffff;
-            }
-            QPushButton#btnLyrics:disabled {
-                background-color: transparent;
-                color: #4a5768;
-            }
-            QPushButton#btnLyrics:enabled {
-                color: #6ab3f3;
-                border: 1px solid #2481cc;
-            }
-            QPushButton#btnInfo {
-                font-size: 12px;
-                font-weight: bold;
-                padding: 4px 8px;
-                color: #7f91a4;
-            }
-            QPushButton#btnInfo:hover { color: #ffffff; }
-            QSlider::groove:horizontal {
-                height: 4px;
-                background: #242f3d;
-                border-radius: 2px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #2481cc;
-                border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                background: #ffffff;
-                width: 10px;
-                height: 10px;
-                margin: -3px 0;
-                border-radius: 5px;
+            QPushButton#btnSpeed:pressed {
+                background-color: #1e2834;
             }
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 10, 20, 10)
-        layout.setSpacing(16)
+        layout.setContentsMargins(18, 10, 18, 10)
+        layout.setSpacing(14)
 
+        # Left Area: Artwork, Title/Artist, and Like Button
         self.info_container = QWidget(self)
         self.info_container.installEventFilter(self)
-        self.info_container.setFixedWidth(280)
+        self.info_container.setFixedWidth(270)
         info_layout = QHBoxLayout(self.info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(10)
 
         self.artwork_badge = QLabel()
-        self.artwork_badge.setFixedSize(48, 48)
-        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(size=48))
+        self.artwork_badge.setFixedSize(46, 46)
+        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(size=46))
 
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        self.title_label = QLabel(self.tr("No track playing"))
-        self.title_label.setStyleSheet("font-size: 13px; font-weight: bold;")
-        self.artist_label = QLabel(f"{self._config.app_name} Desktop")
-        self.artist_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
+        self.title_label = MarqueeLabel(self.tr("No track playing"), fade_width=14, speed_px_per_sec=30)
+        self.title_label.setFixedHeight(20)
+        title_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        self.title_label.setFont(title_font)
+        self.title_label.setTextColor("#ffffff")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        self.artist_label = MarqueeLabel(f"{self._config.app_name} Desktop", fade_width=12, speed_px_per_sec=26)
+        self.artist_label.setFixedHeight(16)
+        artist_font = QFont("Segoe UI", 9)
+        self.artist_label.setFont(artist_font)
+        self.artist_label.setTextColor("#8192a5")
+        self.artist_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         meta_layout.addWidget(self.title_label)
         meta_layout.addWidget(self.artist_label)
@@ -161,7 +140,7 @@ class PlayerBar(QFrame):
         self.btn_like = QPushButton()
         self.btn_like.setObjectName("btnPlayerLike")
         self.btn_like.setFixedSize(34, 34)
-        self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 18))
+        self.btn_like.setIcon(get_svg_icon("heart_outline", "#8192a5", 18))
         self.btn_like.setIconSize(QSize(18, 18))
         self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_like.setEnabled(False)
@@ -172,6 +151,7 @@ class PlayerBar(QFrame):
         info_layout.addWidget(self.btn_like)
         layout.addWidget(self.info_container)
 
+        # Center Area: Main Playback Controls & Timeline
         self.controls = PlayerControls(self)
         self.controls.play_pause_clicked.connect(self.play_pause_clicked.emit)
         self.controls.next_clicked.connect(self.next_clicked.emit)
@@ -179,23 +159,30 @@ class PlayerBar(QFrame):
         self.controls.seek_requested.connect(self.seek_requested.emit)
         layout.addWidget(self.controls, stretch=1)
 
+        # Right Area: Lyrics, Info, Speed, and Volume
         right_container = QWidget(self)
-        right_container.setFixedWidth(280)
+        right_container.setFixedWidth(270)
         right_layout = QHBoxLayout(right_container)
-        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+        right_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
-        self.btn_lyrics = QPushButton(self.tr("Lyrics"))
-        self.btn_lyrics.setObjectName("btnLyrics")
-        self.btn_lyrics.setIcon(get_svg_icon("lyrics", "#6ab3f3", 16))
+        self.btn_lyrics = QPushButton()
+        self.btn_lyrics.setObjectName("btnPlayerIconAction")
+        self.btn_lyrics.setFixedSize(32, 32)
+        self.btn_lyrics.setIcon(get_svg_icon("lyrics", "#8192a5", 16))
         self.btn_lyrics.setIconSize(QSize(16, 16))
+        self.btn_lyrics.setToolTip(self.tr("Lyrics"))
         self.btn_lyrics.setEnabled(False)
         self.btn_lyrics.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lyrics.clicked.connect(self.lyrics_clicked.emit)
 
-        self.btn_info = QPushButton(self.tr("Info"))
-        self.btn_info.setObjectName("btnInfo")
-        self.btn_info.setIcon(get_svg_icon("info", "#7f91a4", 16))
+        self.btn_info = QPushButton()
+        self.btn_info.setObjectName("btnPlayerIconAction")
+        self.btn_info.setFixedSize(32, 32)
+        self.btn_info.setIcon(get_svg_icon("info", "#8192a5", 16))
         self.btn_info.setIconSize(QSize(16, 16))
+        self.btn_info.setToolTip(self.tr("Track Details"))
         self.btn_info.setEnabled(False)
         self.btn_info.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_info.clicked.connect(self.track_info_clicked.emit)
@@ -206,17 +193,20 @@ class PlayerBar(QFrame):
         self.btn_speed.clicked.connect(self._open_speed_menu)
 
         vol_icon = QLabel()
-        vol_icon.setFixedSize(18, 18)
-        vol_icon.setPixmap(get_svg_pixmap("volume", "#7f91a4", 18))
+        vol_icon.setFixedSize(16, 16)
+        vol_icon.setPixmap(get_svg_pixmap("volume", "#8192a5", 16))
 
         self.vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(80)
+        self.vol_slider.setFixedWidth(75)
         self.vol_slider.valueChanged.connect(self.volume_changed.emit)
 
         right_layout.addWidget(self.btn_lyrics)
         right_layout.addWidget(self.btn_info)
+        right_layout.addSpacing(4)
         right_layout.addWidget(self.btn_speed)
+        right_layout.addSpacing(4)
         right_layout.addWidget(vol_icon)
         right_layout.addWidget(self.vol_slider)
         layout.addWidget(right_container)
@@ -230,6 +220,7 @@ class PlayerBar(QFrame):
 
     def _open_speed_menu(self) -> None:
         menu = QMenu(self)
+        menu.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         menu.setStyleSheet("""
             QMenu {
                 background-color: #17212b;
@@ -239,18 +230,28 @@ class PlayerBar(QFrame):
                 padding: 4px;
             }
             QMenu::item {
-                padding: 6px 24px;
+                padding: 6px 18px 6px 12px;
                 border-radius: 4px;
                 font-size: 13px;
+                text-align: left;
             }
-            QMenu::item:selected { background-color: #2481cc; }
+            QMenu::item:selected {
+                background-color: #2481cc;
+            }
         """)
+
+        empty_pixmap = QPixmap(14, 14)
+        empty_pixmap.fill(Qt.GlobalColor.transparent)
+        empty_icon = QIcon(empty_pixmap)
 
         for speed in SPEED_OPTIONS:
             label = f"{speed}x Normal" if speed == 1.0 else f"{speed}x"
             action = QAction(label, menu)
             if abs(speed - self._current_speed) < 0.01:
-                action.setText(f"✓  {label}")
+                action.setIcon(get_svg_icon("check", "#52a3ff", 14))
+            else:
+                action.setIcon(empty_icon)
+
             action.triggered.connect(lambda checked=False, s=speed: self._on_select_speed(s))
             menu.addAction(action)
 
@@ -292,26 +293,30 @@ class PlayerBar(QFrame):
         self.btn_lyrics.setEnabled(False)
         self.btn_info.setEnabled(False)
         self.btn_like.setEnabled(False)
-        self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 18))
-        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(size=48))
+        self.btn_like.setIcon(get_svg_icon("heart_outline", "#8192a5", 18))
+        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(size=46))
 
     def update_reaction(self, is_liked: bool, heart_count: int) -> None:
         if is_liked:
             self.btn_like.setIcon(get_svg_icon("heart_filled", "#e53935", 18))
         else:
-            self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 18))
+            self.btn_like.setIcon(get_svg_icon("heart_outline", "#8192a5", 18))
         tip = self.tr("Liked") if is_liked else self.tr("Like")
         self.btn_like.setToolTip(tip)
 
     def update_metadata(self, metadata: AudioMetadata) -> None:
         self.btn_lyrics.setEnabled(metadata.has_lyrics)
+        if metadata.has_lyrics:
+            self.btn_lyrics.setIcon(get_svg_icon("lyrics", "#52a3ff", 16))
+        else:
+            self.btn_lyrics.setIcon(get_svg_icon("lyrics", "#8192a5", 16))
 
     def update_cover(self, cover_path: str | None) -> None:
         if cover_path:
             self._cover_path = cover_path
         minithumb = self._current_track.minithumbnail_data if self._current_track else None
         active = self._cover_path or (self._current_track.cover_path if self._current_track else None)
-        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(minithumb_data=minithumb, cover_path=active, size=48))
+        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(minithumb_data=minithumb, cover_path=active, size=46))
 
     def set_playback_state(self, is_playing: bool) -> None:
         self.controls.set_playback_state(is_playing)

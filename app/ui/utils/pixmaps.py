@@ -1,8 +1,9 @@
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 
 from app.models.chat import FAVORITES_CHAT_ID
+from app.ui.utils.icons import render_svg_to_painter
 
 TELEGRAM_AVATAR_PALETTE: tuple[str, ...] = (
     "#e17076",
@@ -43,14 +44,15 @@ def create_chat_avatar_pixmap(title: str, chat_id: int, size: int = 42) -> QPixm
     painter.fillRect(0, 0, render_size, render_size, bg_color)
 
     if chat_id == FAVORITES_CHAT_ID:
-        painter.setPen(QColor("#ffffff"))
-        font = QFont("Segoe UI Emoji", 17 * scale, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "❤️")
+        # Perfectly centered crisp vector heart for Favorites playlist
+        icon_dim = render_size * 0.50
+        ix = (render_size - icon_dim) / 2.0
+        iy = (render_size - icon_dim) / 2.0
+        render_svg_to_painter(painter, "heart_filled", QRectF(ix, iy, icon_dim, icon_dim), color="#ffffff")
     else:
         letter = title.strip()[:1].upper() if title.strip() else "C"
         painter.setPen(QColor("#ffffff"))
-        font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
+        font = QFont("Segoe UI", 16 * scale, QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
 
@@ -111,7 +113,7 @@ def create_circular_avatar_pixmap(
     if not has_drawn:
         painter.fillRect(0, 0, render_size, render_size, QColor("#2b5278"))
         painter.setPen(QColor("#ffffff"))
-        font = QFont("Vazirmatn", 15 * scale, QFont.Weight.Bold)
+        font = QFont("Segoe UI", 15 * scale, QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, initial)
 
@@ -174,28 +176,30 @@ def create_rounded_cover_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
+    # Crisp Vector SVG Fallback with perfect optical centering
     if not has_drawn:
-        bg_color = QColor("#2481cc" if is_active else "#2b5278")
+        bg_color = QColor("#2481cc" if is_active else "#28384b")
         painter.fillRect(0, 0, render_size, render_size, bg_color)
-        painter.setPen(QColor("#ffffff"))
-        font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(target_pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
+        icon_dim = render_size * 0.48
+        ix = (render_size - icon_dim) / 2.0
+        iy = (render_size - icon_dim) / 2.0
+        render_svg_to_painter(painter, "music", QRectF(ix, iy, icon_dim, icon_dim), color="#ffffff")
 
+    # Crisp Vector Equalizer Badge for active playing track
     if is_active:
         badge_size = 18 * scale
         badge_x = render_size - badge_size - (3 * scale)
         badge_y = render_size - badge_size - (3 * scale)
 
         painter.setClipping(False)
-        painter.setBrush(QColor(79, 174, 78, 230))
-        painter.setPen(QPen(QColor("#ffffff"), 1 * scale))
+        painter.setBrush(QColor(79, 174, 78, 235))
+        painter.setPen(QPen(QColor("#ffffff"), 1.2 * scale))
         painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
 
-        painter.setPen(QColor("#ffffff"))
-        font_icon = QFont("Segoe UI Emoji", 9 * scale, QFont.Weight.Bold)
-        painter.setFont(font_icon)
-        painter.drawText(badge_x, badge_y, badge_size, badge_size, Qt.AlignmentFlag.AlignCenter, "🔊")
+        eq_dim = badge_size * 0.55
+        ex = badge_x + (badge_size - eq_dim) / 2.0
+        ey = badge_y + (badge_size - eq_dim) / 2.0
+        render_svg_to_painter(painter, "equalizer", QRectF(ex, ey, eq_dim, eq_dim), color="#ffffff")
 
     painter.end()
     target_pixmap.setDevicePixelRatio(scale)

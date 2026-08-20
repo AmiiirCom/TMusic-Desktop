@@ -1,4 +1,5 @@
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
@@ -10,12 +11,13 @@ from PySide6.QtWidgets import (
 
 from app.core.metadata import AudioMetadata
 from app.models.track import Track
+from app.ui.components.marquee_label import MarqueeLabel
 from app.ui.utils.pixmaps import create_rounded_cover_pixmap
 from app.ui.views.base_modal import BaseModalDialog
 
 
 class TrackInfoDialog(BaseModalDialog):
-    """Frameless modal dialog displaying detailed track tags and ID3 metadata."""
+    """Frameless modal dialog displaying detailed track tags with marquee headers."""
 
     def __init__(self, track: Track, metadata: AudioMetadata | None, parent: QWidget | None = None) -> None:
         super().__init__(title="Track Details", parent=parent)
@@ -32,16 +34,26 @@ class TrackInfoDialog(BaseModalDialog):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(3)
-        t_lbl = QLabel(meta.title or track.display_title)
-        t_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #6ab3f3;")
-        a_lbl = QLabel(meta.artist or track.display_artist)
-        a_lbl.setStyleSheet("font-size: 12px; color: #7f91a4;")
+
+        # Sliding Marquee Title in Dialog Header
+        t_lbl = MarqueeLabel(meta.title or track.display_title, fade_width=16, speed_px_per_sec=30)
+        t_lbl.setFixedHeight(22)
+        t_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
+        t_lbl.setFont(t_font)
+        t_lbl.setTextColor("#6ab3f3")
+
+        # Sliding Marquee Artist in Dialog Header
+        a_lbl = MarqueeLabel(meta.artist or track.display_artist, fade_width=14, speed_px_per_sec=26)
+        a_lbl.setFixedHeight(18)
+        a_font = QFont("Segoe UI", 9)
+        a_lbl.setFont(a_font)
+        a_lbl.setTextColor("#7f91a4")
+
         title_box.addWidget(t_lbl)
         title_box.addWidget(a_lbl)
 
         top_layout.addWidget(cover_lbl)
-        top_layout.addLayout(title_box)
-        top_layout.addStretch()
+        top_layout.addLayout(title_box, stretch=1)
         self.body_layout.addLayout(top_layout)
 
         sep = QFrame()

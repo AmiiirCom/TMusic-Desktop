@@ -15,6 +15,7 @@ from app.settings.service import SettingsService
 from app.telegram.adapter import TDLibAdapter
 from app.telegram.service import TelegramService
 from app.ui.main_window import MainWindow
+from app.ui.views.splash_screen import SplashScreen
 
 logger = logging.getLogger("tmusic.main")
 
@@ -48,6 +49,12 @@ def main() -> int:
 
     app = create_application(config)
 
+    # 1. Launch animated splash screen immediately
+    splash = SplashScreen(config)
+    splash.show()
+    app.processEvents()
+
+    # 2. Initialize application services during splash screen
     crypto_manager = CryptoManager(config.app_data_dir)
     settings_service = SettingsService(config, crypto_manager)
 
@@ -69,9 +76,17 @@ def main() -> int:
         stream_server=stream_server,
         tdlib_adapter=tdlib_adapter,
     )
-    window.show()
 
     telegram_service.start()
+
+    # 3. Smooth transition from Splash Screen to MainWindow
+    def on_splash_finish() -> None:
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    splash.finish_and_close(callback=on_splash_finish, delay_ms=3000)
+
     exit_code = app.exec()
 
     stream_server.stop()
