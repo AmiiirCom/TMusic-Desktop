@@ -92,7 +92,7 @@ class SidebarWidget(QWidget):
         chat_search_layout.setContentsMargins(10, 6, 10, 6)
 
         self.chat_search_input = QLineEdit()
-        self.chat_search_input.setPlaceholderText("🔍 جستجوی کانال...")
+        self.chat_search_input.setPlaceholderText("🔍 جستجوی پلی لیست...")
         self.chat_search_input.setStyleSheet("""
             QLineEdit {
                 background-color: #242f3d;
@@ -109,7 +109,7 @@ class SidebarWidget(QWidget):
         chat_search_layout.addWidget(self.chat_search_input)
         layout.addWidget(chat_search_container)
 
-        section_label = QLabel("  کانال‌های موزیک شما")
+        section_label = QLabel("  پلی لیست های شما")
         section_label.setFixedHeight(36)
         section_label.setStyleSheet("color: #6ab3f3; font-size: 12px; font-weight: bold;")
         layout.addWidget(section_label)

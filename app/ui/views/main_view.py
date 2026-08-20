@@ -76,7 +76,7 @@ class MainView(QWidget):
         header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(16)
 
-        self.selected_chat_title = QLabel("کانالی انتخاب نشده است")
+        self.selected_chat_title = QLabel("پلی لیستی انتخاب نشده است")
         self.selected_chat_title.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: bold;")
 
         self.search_input = QLineEdit()
@@ -107,7 +107,7 @@ class MainView(QWidget):
         self.placeholder_page = QWidget()
         ph_layout = QVBoxLayout(self.placeholder_page)
         ph_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.placeholder_msg = QLabel("لطفاً یک کانال یا گروه از سایدبار انتخاب کنید تا موزیک‌های آن بارگذاری شوند 🎵")
+        self.placeholder_msg = QLabel("لطفاً یک پلی لیست از سایدبار انتخاب کنید تا موزیک‌های آن بارگذاری شوند 🎵")
         self.placeholder_msg.setStyleSheet("color: #7f91a4; font-size: 14px;")
         ph_layout.addWidget(self.placeholder_msg)
         self.content_stack.addWidget(self.placeholder_page)
@@ -227,7 +227,7 @@ class MainView(QWidget):
             self._is_searching = False
             self._original_tracks = []
         elif not self._original_tracks:
-            self.placeholder_msg.setText("هیچ موزیکی در این کانال یافت نشد! 📂")
+            self.placeholder_msg.setText("هیچ موزیکی در این پلی لیست یافت نشد! 📂")
             self.content_stack.setCurrentIndex(0)
 
     def _on_internal_chat_selected(self, chat: OwnedChat) -> None:
@@ -245,7 +245,7 @@ class MainView(QWidget):
 
     def set_initial_tracks(self, tracks: list[Track], has_more: bool) -> None:
         if not tracks:
-            self.placeholder_msg.setText("هیچ موزیکی در این کانال یافت نشد! 📂")
+            self.placeholder_msg.setText("هیچ موزیکی در این پلی لیست یافت نشد! 📂")
             self.content_stack.setCurrentIndex(0)
             return
         self.track_list.set_tracks(tracks, has_more=has_more)
