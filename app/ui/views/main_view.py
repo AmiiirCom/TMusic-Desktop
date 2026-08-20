@@ -38,7 +38,7 @@ class MainView(QWidget):
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config = config
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._active_chat: OwnedChat | None = None
         self._original_tracks: list[Track] = []
         self._is_searching = False
@@ -81,11 +81,11 @@ class MainView(QWidget):
         header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(16)
 
-        self.selected_chat_title = QLabel("پلی لیستی انتخاب نشده است")
+        self.selected_chat_title = QLabel(self.tr("No playlist selected"))
         self.selected_chat_title.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: bold;")
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 جستجوی نام موزیک یا خواننده...")
+        self.search_input.setPlaceholderText(self.tr("Search title or artist..."))
         self.search_input.setFixedWidth(260)
         self.search_input.setStyleSheet("""
             QLineEdit {
@@ -112,7 +112,7 @@ class MainView(QWidget):
         self.placeholder_page = QWidget()
         ph_layout = QVBoxLayout(self.placeholder_page)
         ph_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.placeholder_msg = QLabel("لطفاً یک پلی لیست از سایدبار انتخاب کنید تا موزیک‌های آن بارگذاری شوند 🎵")
+        self.placeholder_msg = QLabel(self.tr("Select a playlist from the sidebar to view tracks."))
         self.placeholder_msg.setStyleSheet("color: #7f91a4; font-size: 14px;")
         ph_layout.addWidget(self.placeholder_msg)
         self.content_stack.addWidget(self.placeholder_page)
@@ -136,7 +136,7 @@ class MainView(QWidget):
             QProgressBar { background-color: #242f3d; border: none; border-radius: 2px; }
             QProgressBar::chunk { background-color: #2481cc; border-radius: 2px; }
         """)
-        self.search_loading_label = QLabel("🔍 در حال جستجو...")
+        self.search_loading_label = QLabel(self.tr("Searching..."))
         self.search_loading_label.setStyleSheet("color: #7f91a4; font-size: 14px;")
         loading_layout.addWidget(self.search_progress)
         loading_layout.addWidget(self.search_loading_label)
@@ -144,9 +144,9 @@ class MainView(QWidget):
 
         content_layout.addWidget(self.content_stack)
 
-        splitter.addWidget(content_area)
         splitter.addWidget(self.sidebar)
-        splitter.setSizes([720, 280])
+        splitter.addWidget(content_area)
+        splitter.setSizes([280, 720])
         root_layout.addWidget(splitter, stretch=1)
 
         self.player_bar = PlayerBar(self._config, self)
@@ -211,7 +211,7 @@ class MainView(QWidget):
             self.player_bar.update_reaction(is_liked, heart_count)
 
     def set_network_stats(self, speed_str: str, total_str: str) -> None:
-        self.sidebar.net_stats_label.setText(f"⚡ {speed_str} | سشن: {total_str}")
+        self.sidebar.net_stats_label.setText(f"Download: {speed_str} | Session: {total_str}")
 
     def scroll_to_track(self, track: Track) -> None:
         self.track_list.scroll_to_track(track.id)
@@ -225,7 +225,7 @@ class MainView(QWidget):
             self._is_searching = True
 
         if not tracks:
-            self.placeholder_msg.setText("🔍 نتیجه‌ای برای جستجوی شما یافت نشد!")
+            self.placeholder_msg.setText(self.tr("No results found for your search."))
             self.content_stack.setCurrentIndex(0)
         else:
             self.track_list.set_tracks(tracks, has_more=False)
@@ -242,9 +242,9 @@ class MainView(QWidget):
             self._original_tracks = []
         elif not self._original_tracks:
             empty_text = (
-                "هنوز هیچ آهنگی را لایک نکرده‌اید! ❤️"
+                self.tr("You have not liked any tracks yet.")
                 if self._is_active_chat_favorites
-                else "هیچ موزیکی در این پلی لیست یافت نشد! 📂"
+                else self.tr("No audio tracks found in this playlist.")
             )
             self.placeholder_msg.setText(empty_text)
             self.content_stack.setCurrentIndex(0)
@@ -252,19 +252,14 @@ class MainView(QWidget):
     def _on_internal_chat_selected(self, chat: OwnedChat) -> None:
         self._active_chat = chat
         if chat.is_favorites:
-            self.selected_chat_title.setText("❤️ Favorites (موزیک‌های لایک‌شده)")
+            self.selected_chat_title.setText(self.tr("Favorites"))
         else:
-            self.selected_chat_title.setText(f"{chat.title} ({chat.type_display})")
+            self.selected_chat_title.setText(chat.title)
 
         self.search_input.clear()
         self.search_input.show()
         self._search_timer.stop()
-        loading_text = (
-            "در حال بارگذاری موزیک‌های لایک‌شده... 🔄"
-            if chat.is_favorites
-            else "در حال دریافت ترک‌ها... 🔄"
-        )
-        self.placeholder_msg.setText(loading_text)
+        self.placeholder_msg.setText(self.tr("Loading tracks..."))
         self.content_stack.setCurrentIndex(0)
         self.chat_selected.emit(chat)
         self._is_searching = False
@@ -277,9 +272,9 @@ class MainView(QWidget):
 
         if not tracks:
             empty_text = (
-                "هنوز هیچ آهنگی را لایک نکرده‌اید! ❤️"
+                self.tr("You have not liked any tracks yet.")
                 if self._is_active_chat_favorites
-                else "هیچ موزیکی در این پلی لیست یافت نشد! 📂"
+                else self.tr("No audio tracks found in this playlist.")
             )
             self.placeholder_msg.setText(empty_text)
             self.content_stack.setCurrentIndex(0)
@@ -321,9 +316,9 @@ class MainView(QWidget):
 
             if self.track_list.count() == 0:
                 empty_text = (
-                    "هنوز هیچ آهنگی را لایک نکرده‌اید! ❤️"
+                    self.tr("You have not liked any tracks yet.")
                     if self._is_active_chat_favorites
-                    else "هیچ موزیکی در این پلی لیست یافت نشد! 📂"
+                    else self.tr("No audio tracks found in this playlist.")
                 )
                 self.placeholder_msg.setText(empty_text)
                 self.content_stack.setCurrentIndex(0)

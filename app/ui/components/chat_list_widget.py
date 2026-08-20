@@ -13,7 +13,7 @@ from app.ui.utils.pixmaps import create_chat_avatar_pixmap
 
 
 class ChatItemWidget(QWidget):
-    """Custom Telegram-style channel list item widget with vibrant avatars."""
+    """Custom Telegram-style channel list item widget with clean typography."""
 
     def __init__(self, chat: OwnedChat, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -37,8 +37,7 @@ class ChatItemWidget(QWidget):
         title_label = QLabel(self.chat.title)
         title_label.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
 
-        icon_prefix = "❤️" if self.chat.is_favorites else "🎵"
-        type_label = QLabel(f"{icon_prefix} {self.chat.type_display}")
+        type_label = QLabel(self.chat.type_display)
         type_label.setStyleSheet("color: #7f91a4; font-size: 12px;")
 
         info_layout.addWidget(title_label)
@@ -57,7 +56,7 @@ class OwnedChatListWidget(QListWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._all_chats: list[OwnedChat] = []
         self._current_query: str = ""
         self._chat_widgets: dict[int, ChatItemWidget] = {}
@@ -84,7 +83,6 @@ class OwnedChatListWidget(QListWidget):
         self.itemClicked.connect(self._on_item_clicked)
 
     def set_chats(self, chats: list[OwnedChat]) -> None:
-        """Set the full list of chats, always keeping Favorites pinned at the top."""
         favorites_chat = get_favorites_chat()
         other_chats = [c for c in chats if not c.is_favorites]
         self._all_chats = [favorites_chat] + other_chats

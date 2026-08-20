@@ -36,7 +36,7 @@ class PlayerBar(QFrame):
         super().__init__(parent)
         self._config = config
         self.setFixedHeight(84)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._current_track: Track | None = None
         self._cover_path: str | None = None
         self._current_speed = 1.0
@@ -50,7 +50,7 @@ class PlayerBar(QFrame):
             }
             QLabel {
                 color: #ffffff;
-                font-family: 'Vazirmatn', 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', 'Vazirmatn', sans-serif;
             }
             QPushButton {
                 background: transparent;
@@ -94,8 +94,9 @@ class PlayerBar(QFrame):
             }
             QPushButton#btnLyrics {
                 background-color: #242f3d;
-                font-size: 14px;
-                padding: 4px 8px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 4px 10px;
                 border-radius: 6px;
                 color: #ffffff;
             }
@@ -108,8 +109,9 @@ class PlayerBar(QFrame):
                 border: 1px solid #2481cc;
             }
             QPushButton#btnInfo {
-                font-size: 15px;
-                padding: 4px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 4px 8px;
                 color: #7f91a4;
             }
             QPushButton#btnInfo:hover { color: #ffffff; }
@@ -150,7 +152,7 @@ class PlayerBar(QFrame):
         meta_layout.setSpacing(2)
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        self.title_label = QLabel("آهنگی در حال پخش نیست")
+        self.title_label = QLabel(self.tr("No track playing"))
         self.title_label.setStyleSheet("font-size: 13px; font-weight: bold;")
         self.artist_label = QLabel(f"{self._config.app_name} Desktop")
         self.artist_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
@@ -182,13 +184,13 @@ class PlayerBar(QFrame):
         right_layout = QHBoxLayout(right_container)
         right_layout.setSpacing(8)
 
-        self.btn_lyrics = QPushButton("📝")
+        self.btn_lyrics = QPushButton(self.tr("Lyrics"))
         self.btn_lyrics.setObjectName("btnLyrics")
         self.btn_lyrics.setEnabled(False)
         self.btn_lyrics.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lyrics.clicked.connect(self.lyrics_clicked.emit)
 
-        self.btn_info = QPushButton("ℹ️")
+        self.btn_info = QPushButton(self.tr("Info"))
         self.btn_info.setObjectName("btnInfo")
         self.btn_info.setEnabled(False)
         self.btn_info.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -199,7 +201,8 @@ class PlayerBar(QFrame):
         self.btn_speed.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_speed.clicked.connect(self._open_speed_menu)
 
-        vol_icon = QLabel("🔊")
+        vol_icon = QLabel("Vol")
+        vol_icon.setStyleSheet("color: #7f91a4; font-size: 11px; font-weight: bold;")
         self.vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(80)
@@ -238,7 +241,7 @@ class PlayerBar(QFrame):
         """)
 
         for speed in SPEED_OPTIONS:
-            label = f"{speed}x (عادی)" if speed == 1.0 else f"{speed}x"
+            label = f"{speed}x Normal" if speed == 1.0 else f"{speed}x"
             action = QAction(label, menu)
             if abs(speed - self._current_speed) < 0.01:
                 action.setText(f"✓  {label}")
@@ -275,7 +278,7 @@ class PlayerBar(QFrame):
     def reset_track(self) -> None:
         self._current_track = None
         self._cover_path = None
-        self.title_label.setText("آهنگی در حال پخش نیست")
+        self.title_label.setText(self.tr("No track playing"))
         self.artist_label.setText(f"{self._config.app_name} Desktop")
         self.controls.set_position(0)
         self.controls.set_duration(0)
@@ -288,7 +291,7 @@ class PlayerBar(QFrame):
 
     def update_reaction(self, is_liked: bool, heart_count: int) -> None:
         self.btn_like.setText("❤️" if is_liked else "🤍")
-        tip = f"پسندیده‌اید ({heart_count})" if is_liked else "پسندیدن آهنگ (Like)"
+        tip = self.tr("Liked") if is_liked else self.tr("Like")
         self.btn_like.setToolTip(tip)
 
     def update_metadata(self, metadata: AudioMetadata) -> None:

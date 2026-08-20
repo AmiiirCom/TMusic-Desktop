@@ -25,7 +25,7 @@ class SidebarWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedWidth(300)
-        self.setStyleSheet("background-color: #17212b; border-left: 1px solid #0e1621;")
+        self.setStyleSheet("background-color: #17212b; border-right: 1px solid #0e1621;")
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -52,8 +52,9 @@ class SidebarWidget(QWidget):
             QPushButton#btnHeaderAction {
                 background-color: #17212b;
                 color: #6ab3f3;
-                font-size: 14px;
-                padding: 6px 10px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 6px 12px;
                 border-radius: 6px;
                 border: 1px solid #2f3e50;
             }
@@ -73,10 +74,10 @@ class SidebarWidget(QWidget):
         self.user_avatar.setFixedSize(42, 42)
         self.user_avatar.setPixmap(create_circular_avatar_pixmap(None, None, "U", 42))
 
-        self.user_name_label = QLabel("کاربر تلگرام")
+        self.user_name_label = QLabel(self.tr("Telegram User"))
         self.user_name_label.setObjectName("userName")
 
-        btn_settings = QPushButton("⚙️")
+        btn_settings = QPushButton(self.tr("Settings"))
         btn_settings.setObjectName("btnHeaderAction")
         btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_settings.clicked.connect(self.settings_requested.emit)
@@ -92,7 +93,7 @@ class SidebarWidget(QWidget):
         chat_search_layout.setContentsMargins(10, 6, 10, 6)
 
         self.chat_search_input = QLineEdit()
-        self.chat_search_input.setPlaceholderText("🔍 جستجوی پلی لیست...")
+        self.chat_search_input.setPlaceholderText(self.tr("Search playlists..."))
         self.chat_search_input.setStyleSheet("""
             QLineEdit {
                 background-color: #242f3d;
@@ -109,9 +110,9 @@ class SidebarWidget(QWidget):
         chat_search_layout.addWidget(self.chat_search_input)
         layout.addWidget(chat_search_container)
 
-        section_label = QLabel("  پلی لیست های شما")
+        section_label = QLabel(self.tr("Your Playlists"))
         section_label.setFixedHeight(36)
-        section_label.setStyleSheet("color: #6ab3f3; font-size: 12px; font-weight: bold;")
+        section_label.setStyleSheet("color: #6ab3f3; font-size: 12px; font-weight: bold; padding-left: 12px;")
         layout.addWidget(section_label)
 
         self.chat_list = OwnedChatListWidget(self)
@@ -129,7 +130,7 @@ class SidebarWidget(QWidget):
         self.shield_badge.setFixedSize(22, 22)
         self.shield_badge.setStyleSheet("background-color: transparent; border: none;")
 
-        self.net_stats_label = QLabel("⚡ دانلود: 0 KB/s | سشن: 0 KB")
+        self.net_stats_label = QLabel("Download: 0 KB/s | Session: 0 KB")
         self.net_stats_label.setStyleSheet("color: #6ab3f3; font-size: 11px;")
 
         stats_layout.addWidget(self.shield_badge)

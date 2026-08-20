@@ -165,8 +165,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
             self._telegram.set_online_status(False)
-            self._telegram.set_network_monitor_active(False)
-            self._tray.show_message("TMusic", "برنامه در پس‌زمینه در حال پخش است 🎵")
+            self._tray.show_message("TMusic", self.tr("Playing in background"))
         else:
             event.accept()
 
@@ -175,7 +174,6 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self._telegram.set_online_status(True)
-        self._telegram.set_network_monitor_active(True)
 
     def _quit_application(self) -> None:
         self._is_quitting = True

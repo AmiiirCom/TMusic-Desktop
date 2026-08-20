@@ -16,7 +16,7 @@ class LyricsDialog(BaseModalDialog):
     """Frameless unified modal displaying song lyrics."""
 
     def __init__(self, title: str, artist: str, lyrics: str, parent: QWidget | None = None) -> None:
-        super().__init__(title="متن ترانه (Lyrics)", parent=parent)
+        super().__init__(title="Lyrics", parent=parent)
         self._lyrics = lyrics
         self.card_frame.setFixedSize(480, 540)
         self._init_body(title, artist)
@@ -45,7 +45,7 @@ class LyricsDialog(BaseModalDialog):
                 border: 1px solid #242f3d;
                 border-radius: 8px;
                 color: #e4ecf2;
-                font-family: 'Vazirmatn', 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', 'Vazirmatn', sans-serif;
                 font-size: 14px;
                 line-height: 1.8;
                 padding: 14px;
@@ -54,9 +54,9 @@ class LyricsDialog(BaseModalDialog):
         """)
         self.body_layout.addWidget(self.text_box)
 
-        # Action Button (Copy)
+        # Action Button
         btn_layout = QHBoxLayout()
-        self.btn_copy = QPushButton("📋 کپی متن ترانه")
+        self.btn_copy = QPushButton(self.tr("Copy Lyrics"))
         self.btn_copy.setStyleSheet("background-color: #242f3d; color: #6ab3f3; border: 1px solid #2f3e50;")
         self.btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_copy.clicked.connect(self._on_copy_lyrics)
@@ -67,4 +67,4 @@ class LyricsDialog(BaseModalDialog):
 
     def _on_copy_lyrics(self) -> None:
         QApplication.clipboard().setText(self._lyrics)
-        self.btn_copy.setText("✅ کپی شد!")
+        self.btn_copy.setText(self.tr("Copied"))

@@ -24,7 +24,7 @@ class SettingsDialog(BaseModalDialog):
     """Clean, well-proportioned Settings, Proxy, and Storage management modal."""
 
     cache_cleared = Signal()
-    proxy_saved = Signal(object)  # Emits ProxySettings
+    proxy_saved = Signal(object)
     logout_requested = Signal()
 
     def __init__(
@@ -34,7 +34,7 @@ class SettingsDialog(BaseModalDialog):
         config: AppConfig,
         parent: QWidget | None = None,
     ) -> None:
-        title = f"تنظیمات و حافظه {config.app_name}"
+        title = f"{config.app_name} Settings and Storage"
         super().__init__(title=title, parent=parent)
         self._cache = cache_manager
         self._settings = settings_service
@@ -44,15 +44,15 @@ class SettingsDialog(BaseModalDialog):
 
     def _init_body(self) -> None:
         # Proxy Section
-        proxy_title = QLabel("🛡️ تنظیمات پروکسی تلگرام (رمزنگاری‌شده)")
+        proxy_title = QLabel(self.tr("Telegram Proxy Settings"))
         proxy_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(proxy_title)
 
         # Mode Selection
         self.proxy_mode_combo = QComboBox()
-        self.proxy_mode_combo.addItem("بدون پروکسی (اتصال مستقیم / Direct)", "DIRECT")
-        self.proxy_mode_combo.addItem("استفاده از پروکسی سیستم (System Proxy)", "SYSTEM")
-        self.proxy_mode_combo.addItem("پروکسی دستی (Custom SOCKS5 / HTTP)", "CUSTOM")
+        self.proxy_mode_combo.addItem(self.tr("Direct Connection"), "DIRECT")
+        self.proxy_mode_combo.addItem(self.tr("System Proxy"), "SYSTEM")
+        self.proxy_mode_combo.addItem(self.tr("Custom Proxy"), "CUSTOM")
 
         current_mode = self._settings.preferences.proxy.mode
         idx = self.proxy_mode_combo.findData(current_mode)
@@ -82,18 +82,16 @@ class SettingsDialog(BaseModalDialog):
 
         self.proxy_server = QLineEdit()
         self.proxy_server.setText(self._settings.preferences.proxy.server)
-        self.proxy_server.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
         self.proxy_port = QLineEdit()
         self.proxy_port.setText(str(self._settings.preferences.proxy.port))
-        self.proxy_port.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
-        form.addRow("نوع پروتکل:", self.proxy_type)
-        form.addRow("آدرس سرور:", self.proxy_server)
-        form.addRow("پورت:", self.proxy_port)
+        form.addRow(self.tr("Protocol:"), self.proxy_type)
+        form.addRow(self.tr("Server:"), self.proxy_server)
+        form.addRow(self.tr("Port:"), self.proxy_port)
         self.body_layout.addWidget(self.manual_proxy_frame)
 
-        btn_save_proxy = QPushButton("ذخیره و فعال‌سازی پروکسی")
+        btn_save_proxy = QPushButton(self.tr("Save Proxy Settings"))
         btn_save_proxy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_save_proxy.clicked.connect(self._on_save_proxy)
         self.body_layout.addWidget(btn_save_proxy)
@@ -106,12 +104,11 @@ class SettingsDialog(BaseModalDialog):
         self.body_layout.addWidget(sep1)
 
         # Storage & Download Settings
-        storage_title = QLabel("📂 مدیریت دانلود و ذخیره‌سازی")
+        storage_title = QLabel(self.tr("Storage and Downloads"))
         storage_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(storage_title)
 
-        # Save to Downloads Toggle
-        self.save_downloads_checkbox = QCheckBox("ذخیره خودکار آهنگ‌ها در حافظه (پخش آفلاین)")
+        self.save_downloads_checkbox = QCheckBox(self.tr("Save tracks to storage for offline playback"))
         self.save_downloads_checkbox.setChecked(self._settings.preferences.save_to_downloads)
         self.save_downloads_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_downloads_checkbox.toggled.connect(self._on_toggle_save_to_downloads)
@@ -140,8 +137,7 @@ class SettingsDialog(BaseModalDialog):
         self.body_layout.addWidget(self.save_downloads_checkbox)
 
         save_hint_label = QLabel(
-            "در صورت غیرفعال بودن، آهنگ‌ها کاملاً آنلاین و مستقیم پخش شده و هیچ فایلی در کش یا حافظه دستگاه ذخیره نمی‌شود "
-            "(در صورت وجود قبلی در پوشه دانلودها، از حافظه پخش خواهد شد)."
+            self.tr("When disabled, tracks stream online directly without persistent local file caching.")
         )
         save_hint_label.setStyleSheet("color: #7f91a4; font-size: 11px; margin-bottom: 4px;")
         save_hint_label.setWordWrap(True)
@@ -150,11 +146,10 @@ class SettingsDialog(BaseModalDialog):
         path_label = QLabel(str(self._cache._config.downloads_dir))
         path_label.setStyleSheet("color: #7f91a4; font-size: 11px;")
         path_label.setWordWrap(True)
-        path_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.body_layout.addWidget(path_label)
 
-        btn_open_folder = QPushButton("📁 باز کردن پوشه TMusicDownloads")
+        btn_open_folder = QPushButton(self.tr("Open Downloads Folder"))
         btn_open_folder.setStyleSheet("background-color: #242f3d; border: 1px solid #2f3e50;")
         btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_open_folder.clicked.connect(self._on_open_downloads_folder)
@@ -164,7 +159,7 @@ class SettingsDialog(BaseModalDialog):
         storage_actions_row.setSpacing(10)
 
         cache_info_layout = QVBoxLayout()
-        cache_label = QLabel("حجم کش:")
+        cache_label = QLabel(self.tr("Cache Size:"))
         cache_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
 
         max_size_str = self._cache.get_formatted_max_size()
@@ -175,14 +170,14 @@ class SettingsDialog(BaseModalDialog):
         cache_info_layout.addWidget(self.cache_size_val)
 
         downloads_info_layout = QVBoxLayout()
-        downloads_label = QLabel("حجم دانلودها:")
+        downloads_label = QLabel(self.tr("Downloads:"))
         downloads_label.setStyleSheet("font-size: 12px; color: #7f91a4;")
         self.downloads_size_val = QLabel(self._cache.get_formatted_downloads_size())
         self.downloads_size_val.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         downloads_info_layout.addWidget(downloads_label)
         downloads_info_layout.addWidget(self.downloads_size_val)
 
-        btn_clear = QPushButton("🗑️ پاک‌سازی کش")
+        btn_clear = QPushButton(self.tr("Clear Cache"))
         btn_clear.setStyleSheet("background-color: #242f3d; color: #e53935; border: 1px solid #3b242d;")
         btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_clear.clicked.connect(self._on_clear_cache)
@@ -198,7 +193,7 @@ class SettingsDialog(BaseModalDialog):
         sep2.setStyleSheet("color: #242f3d; margin: 4px 0;")
         self.body_layout.addWidget(sep2)
 
-        btn_logout = QPushButton("🚪 خروج از حساب کاربری تلگرام (Log Out)")
+        btn_logout = QPushButton(self.tr("Log Out of Telegram"))
         btn_logout.setStyleSheet("background-color: #e53935; font-weight: bold; padding: 10px;")
         btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_logout.clicked.connect(self._on_logout_clicked)
@@ -208,21 +203,21 @@ class SettingsDialog(BaseModalDialog):
         mode = self.proxy_mode_combo.currentData()
         if mode == "DIRECT":
             self.manual_proxy_frame.hide()
-            self.proxy_status_hint.setText("🌐 اتصال مستقیم بدون پروکسی برقرار می‌شود.")
+            self.proxy_status_hint.setText(self.tr("Connecting directly without proxy."))
             self.proxy_status_hint.setStyleSheet("color: #7f91a4; font-size: 11px;")
         elif mode == "SYSTEM":
             self.manual_proxy_frame.hide()
             sys_proxy = detect_system_proxy()
             if sys_proxy:
                 ptype, host, port, _, _ = sys_proxy
-                self.proxy_status_hint.setText(f"✅ پروکسی سیستم شناسایی شد: {ptype}://{host}:{port}")
+                self.proxy_status_hint.setText(f"{self.tr('System proxy detected:')} {ptype}://{host}:{port}")
                 self.proxy_status_hint.setStyleSheet("color: #4fae4e; font-size: 11px; font-weight: bold;")
             else:
-                self.proxy_status_hint.setText("⚠️ پروکسی فعالی روی سیستم‌عامل شناسایی نشد (اتصال مستقیم برقرار می‌شود).")
+                self.proxy_status_hint.setText(self.tr("No active system proxy detected."))
                 self.proxy_status_hint.setStyleSheet("color: #e6a23c; font-size: 11px;")
         elif mode == "CUSTOM":
             self.manual_proxy_frame.show()
-            self.proxy_status_hint.setText("⚙️ مشخصات پروکسی SOCKS5 یا HTTP خود را وارد کنید:")
+            self.proxy_status_hint.setText(self.tr("Enter SOCKS5 or HTTP proxy parameters:"))
             self.proxy_status_hint.setStyleSheet("color: #6ab3f3; font-size: 11px;")
 
     def _on_save_proxy(self) -> None:
@@ -259,8 +254,8 @@ class SettingsDialog(BaseModalDialog):
     def _on_logout_clicked(self) -> None:
         reply = QMessageBox.question(
             self,
-            "خروج از حساب",
-            "آیا مطمئن هستید؟ با خروج، نشست و کش‌ها پاک شده و برنامه بسته خواهد شد (آهنگ‌های دانلودشده در TMusicDownloads باقی می‌مانند).",
+            self.tr("Log Out"),
+            self.tr("Are you sure you want to log out? Local cache and session data will be cleared."),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

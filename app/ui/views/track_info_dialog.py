@@ -18,7 +18,7 @@ class TrackInfoDialog(BaseModalDialog):
     """Frameless modal dialog displaying detailed track tags and ID3 metadata."""
 
     def __init__(self, track: Track, metadata: AudioMetadata | None, parent: QWidget | None = None) -> None:
-        super().__init__(title="مشخصات و متادیتای آهنگ", parent=parent)
+        super().__init__(title="Track Details", parent=parent)
         self.card_frame.setFixedWidth(460)
         self._init_body(track, metadata or AudioMetadata())
 
@@ -61,23 +61,23 @@ class TrackInfoDialog(BaseModalDialog):
                 v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 form.addRow(k, v)
 
-        add_row("نام آهنگ (Title):", meta.title or track.title)
-        add_row("خواننده (Artist):", meta.artist or track.artist)
-        add_row("آلبوم (Album):", meta.album)
-        add_row("سبک (Genre):", meta.genre)
-        add_row("آهنگساز (Composer):", meta.composer)
-        add_row("ناشر (Publisher):", meta.publisher)
-        add_row("شماره ترک در آلبوم:", meta.track_number)
+        add_row(self.tr("Title:"), meta.title or track.title)
+        add_row(self.tr("Artist:"), meta.artist or track.artist)
+        add_row(self.tr("Album:"), meta.album)
+        add_row(self.tr("Genre:"), meta.genre)
+        add_row(self.tr("Composer:"), meta.composer)
+        add_row(self.tr("Publisher:"), meta.publisher)
+        add_row(self.tr("Track Number:"), meta.track_number)
 
         if meta.release_date:
-            add_row("📅 سال انتشار اثر:", meta.release_date)
+            add_row(self.tr("Release Date:"), meta.release_date)
 
-        add_row("مدت زمان:", track.formatted_duration)
-        add_row("حجم فایل:", track.formatted_size)
+        add_row(self.tr("Duration:"), track.formatted_duration)
+        add_row(self.tr("File Size:"), track.formatted_size)
         if meta.bitrate_kbps > 0:
-            add_row("بیت‌ریت (Bitrate):", f"{meta.bitrate_kbps} kb/s")
+            add_row(self.tr("Bitrate:"), f"{meta.bitrate_kbps} kb/s")
 
         if track.formatted_date:
-            add_row("تاریخ ارسال در تلگرام:", track.formatted_date)
+            add_row(self.tr("Telegram Date:"), track.formatted_date)
 
         self.body_layout.addLayout(form)

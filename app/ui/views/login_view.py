@@ -14,35 +14,36 @@ from app.ui.views.proxy_dialog import ProxyDialog
 
 
 class LoginView(QWidget):
-    """Telegram-styled authentication widget with dual-input phone fields."""
+    """Telegram-styled authentication widget with clean English labels."""
 
     phone_submitted = Signal(str)
     code_submitted = Signal(str)
     password_submitted = Signal(str)
-    proxy_configured = Signal(object)  # Emits ProxySettings
+    proxy_configured = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._current_proxy_settings = ProxySettings()
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._init_ui()
 
     def _init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Top Bar (Connection status & Proxy button)
+        # Top Bar
         top_bar = QHBoxLayout()
-        self.conn_status_label = QLabel("وضعیت: در انتظار اتصال...")
+        self.conn_status_label = QLabel(self.tr("Status: Connecting..."))
         self.conn_status_label.setStyleSheet("color: #707579; font-size: 12px;")
 
-        btn_proxy = QPushButton("⚙️ تنظیمات پروکسی")
+        btn_proxy = QPushButton(self.tr("Proxy Settings"))
         btn_proxy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_proxy.setStyleSheet("""
             QPushButton {
                 background: transparent;
                 color: #2481cc;
                 font-size: 12px;
+                font-weight: bold;
                 border: none;
                 padding: 4px 8px;
             }
@@ -64,7 +65,7 @@ class LoginView(QWidget):
                 border-radius: 12px;
             }
             QLabel {
-                font-family: 'Vazirmatn', 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', sans-serif;
                 color: #222222;
             }
             QLineEdit {
@@ -96,7 +97,7 @@ class LoginView(QWidget):
         card_layout.setContentsMargins(28, 32, 28, 32)
         card_layout.setSpacing(16)
 
-        title_label = QLabel("ورود به تلگرام")
+        title_label = QLabel(self.tr("Log In to Telegram"))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #2481cc;")
         card_layout.addWidget(title_label)
@@ -110,38 +111,34 @@ class LoginView(QWidget):
 
         self.stack = QStackedWidget(self)
 
-        # 1. Phone Step (Separated Prefix + Number)
+        # 1. Phone Step
         phone_page = QWidget()
         phone_layout = QVBoxLayout(phone_page)
         phone_layout.setContentsMargins(0, 0, 0, 0)
         phone_layout.setSpacing(14)
 
-        desc_phone = QLabel("کد کشور و شماره موبایل خود را وارد کنید:")
+        desc_phone = QLabel(self.tr("Enter your country code and phone number:"))
         desc_phone.setWordWrap(True)
         desc_phone.setStyleSheet("font-size: 13px; color: #707579;")
 
-        # Dual Input Container (Explicitly LTR on QWidget)
         inputs_container = QWidget(phone_page)
-        inputs_container.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         inputs_row = QHBoxLayout(inputs_container)
         inputs_row.setContentsMargins(0, 0, 0, 0)
         inputs_row.setSpacing(8)
 
-        # Country Code Input
-        self.country_code_input = QLineEdit("+98")
+        self.country_code_input = QLineEdit("+1")
         self.country_code_input.setFixedWidth(80)
         self.country_code_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.country_code_input.returnPressed.connect(self._on_country_code_enter)
 
-        # Main Phone Number Input
         self.phone_number_input = QLineEdit()
-        self.phone_number_input.setPlaceholderText("9123456789")
+        self.phone_number_input.setPlaceholderText(self.tr("Phone number"))
         self.phone_number_input.returnPressed.connect(self._on_submit_phone)
 
         inputs_row.addWidget(self.country_code_input)
         inputs_row.addWidget(self.phone_number_input)
 
-        self.btn_phone = QPushButton("ادامه")
+        self.btn_phone = QPushButton(self.tr("Continue"))
         self.btn_phone.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_phone.clicked.connect(self._on_submit_phone)
 
@@ -155,15 +152,14 @@ class LoginView(QWidget):
         code_layout.setContentsMargins(0, 0, 0, 0)
         code_layout.setSpacing(12)
 
-        desc_code = QLabel("کد تایید ارسال‌شده به تلگرام را وارد کنید:")
+        desc_code = QLabel(self.tr("Enter the verification code sent to your Telegram app:"))
         desc_code.setWordWrap(True)
         desc_code.setStyleSheet("font-size: 13px; color: #707579;")
         self.code_input = QLineEdit()
-        self.code_input.setPlaceholderText("12345")
-        self.code_input.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.code_input.setPlaceholderText(self.tr("Code"))
         self.code_input.returnPressed.connect(self._on_submit_code)
 
-        self.btn_code = QPushButton("تایید کد")
+        self.btn_code = QPushButton(self.tr("Confirm Code"))
         self.btn_code.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_code.clicked.connect(self._on_submit_code)
 
@@ -177,16 +173,15 @@ class LoginView(QWidget):
         pwd_layout.setContentsMargins(0, 0, 0, 0)
         pwd_layout.setSpacing(12)
 
-        desc_pwd = QLabel("رمز تایید دومرحله‌ای خود را وارد کنید:")
+        desc_pwd = QLabel(self.tr("Enter your Two-Step Verification cloud password:"))
         desc_pwd.setWordWrap(True)
         desc_pwd.setStyleSheet("font-size: 13px; color: #707579;")
         self.pwd_input = QLineEdit()
         self.pwd_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.pwd_input.setPlaceholderText("Password")
-        self.pwd_input.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.pwd_input.setPlaceholderText(self.tr("Password"))
         self.pwd_input.returnPressed.connect(self._on_submit_password)
 
-        self.btn_pwd = QPushButton("ورود")
+        self.btn_pwd = QPushButton(self.tr("Log In"))
         self.btn_pwd.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_pwd.clicked.connect(self._on_submit_password)
 
@@ -204,16 +199,16 @@ class LoginView(QWidget):
     def set_connection_status(self, state: str) -> None:
         match state:
             case "connectionStateReady":
-                self.conn_status_label.setText("وضعیت: متصل به تلگرام ✅")
+                self.conn_status_label.setText(self.tr("Status: Connected"))
                 self.conn_status_label.setStyleSheet("color: #4fae4e; font-size: 12px;")
             case "connectionStateConnectingToProxy":
-                self.conn_status_label.setText("وضعیت: در حال اتصال به پروکسی... 🔄")
+                self.conn_status_label.setText(self.tr("Status: Connecting to proxy..."))
                 self.conn_status_label.setStyleSheet("color: #e6a23c; font-size: 12px;")
             case "connectionStateConnecting":
-                self.conn_status_label.setText("وضعیت: در حال اتصال به تلگرام... 🔄")
+                self.conn_status_label.setText(self.tr("Status: Connecting to Telegram..."))
                 self.conn_status_label.setStyleSheet("color: #e6a23c; font-size: 12px;")
             case "connectionStateWaitingForNetwork":
-                self.conn_status_label.setText("وضعیت: در انتظار اینترنت / پروکسی ⚠️")
+                self.conn_status_label.setText(self.tr("Status: Waiting for network"))
                 self.conn_status_label.setStyleSheet("color: #e53935; font-size: 12px;")
 
     def _open_proxy_dialog(self) -> None:
@@ -250,11 +245,11 @@ class LoginView(QWidget):
 
     def _reset_buttons(self) -> None:
         self.btn_phone.setEnabled(True)
-        self.btn_phone.setText("ادامه")
+        self.btn_phone.setText(self.tr("Continue"))
         self.btn_code.setEnabled(True)
-        self.btn_code.setText("تایید کد")
+        self.btn_code.setText(self.tr("Confirm Code"))
         self.btn_pwd.setEnabled(True)
-        self.btn_pwd.setText("ورود")
+        self.btn_pwd.setText(self.tr("Log In"))
 
     def _on_country_code_enter(self) -> None:
         self.phone_number_input.setFocus()
@@ -264,7 +259,7 @@ class LoginView(QWidget):
         number = self.phone_number_input.text().strip()
 
         if not code or not number:
-            self.show_error("لطفاً پیش‌شماره کشور و شماره تلفن را وارد کنید.")
+            self.show_error(self.tr("Please enter both country code and phone number."))
             return
 
         if not code.startswith("+"):
@@ -274,19 +269,19 @@ class LoginView(QWidget):
         full_phone = f"{code}{clean_number}"
 
         self.btn_phone.setEnabled(False)
-        self.btn_phone.setText("در حال ارسال...")
+        self.btn_phone.setText(self.tr("Sending..."))
         self.phone_submitted.emit(full_phone)
 
     def _on_submit_code(self) -> None:
         text = self.code_input.text().strip()
         if text:
             self.btn_code.setEnabled(False)
-            self.btn_code.setText("در حال بررسی...")
+            self.btn_code.setText(self.tr("Checking..."))
             self.code_submitted.emit(text)
 
     def _on_submit_password(self) -> None:
         text = self.pwd_input.text()
         if text:
             self.btn_pwd.setEnabled(False)
-            self.btn_pwd.setText("در حال ورود...")
+            self.btn_pwd.setText(self.tr("Logging in..."))
             self.password_submitted.emit(text)
