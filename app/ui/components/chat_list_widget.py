@@ -1,5 +1,4 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -9,59 +8,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.models.chat import OwnedChat
-
-# Official Telegram Desktop vibrant avatar color palette
-TELEGRAM_AVATAR_PALETTE: tuple[str, ...] = (
-    "#e17076",  # Red / Coral
-    "#faa774",  # Orange / Amber
-    "#a695e7",  # Violet / Purple
-    "#7bc862",  # Emerald Green
-    "#6ec9cb",  # Cyan / Teal
-    "#65aadd",  # Telegram Sky Blue
-    "#ee7aae",  # Magenta / Pink
-    "#f28935",  # Warm Orange
-    "#56b949",  # Mint Green
-    "#8e55e7",  # Deep Violet
-)
-
-
-def get_chat_avatar_color(chat_id: int) -> str:
-    """Return a deterministic attractive color from Telegram palette for a given chat ID."""
-    idx = abs(chat_id) % len(TELEGRAM_AVATAR_PALETTE)
-    return TELEGRAM_AVATAR_PALETTE[idx]
-
-
-def create_chat_avatar_pixmap(title: str, chat_id: int, size: int = 42) -> QPixmap:
-    """Generate high-resolution anti-aliased circular avatar with initials and vibrant Telegram colors."""
-    scale = 2
-    render_size = size * scale
-    pixmap = QPixmap(render_size, render_size)
-    pixmap.fill(QColor(0, 0, 0, 0))
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-    # Rounded circle clipping
-    path = QPainterPath()
-    path.addEllipse(0, 0, render_size, render_size)
-    painter.setClipPath(path)
-
-    # Fill vibrant background color
-    bg_color = QColor(get_chat_avatar_color(chat_id))
-    painter.fillRect(0, 0, render_size, render_size, bg_color)
-
-    # Draw centered initial letter
-    letter = title.strip()[:1].upper() if title.strip() else "C"
-    painter.setPen(QColor("#ffffff"))
-    font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
-    painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
-
-    painter.end()
-    pixmap.setDevicePixelRatio(scale)
-    return pixmap
+from app.models.chat import OwnedChat, get_favorites_chat
+from app.ui.utils.pixmaps import create_chat_avatar_pixmap
 
 
 class ChatItemWidget(QWidget):
@@ -77,13 +25,11 @@ class ChatItemWidget(QWidget):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(12)
 
-        # Anti-aliased vibrant initial avatar
         self.avatar_label = QLabel()
         self.avatar_label.setFixedSize(42, 42)
         self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.avatar_label.setPixmap(create_chat_avatar_pixmap(self.chat.title, self.chat.id, size=42))
 
-        # Channel text info
         info_layout = QVBoxLayout()
         info_layout.setSpacing(3)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -91,7 +37,8 @@ class ChatItemWidget(QWidget):
         title_label = QLabel(self.chat.title)
         title_label.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
 
-        type_label = QLabel(f"🎵 {self.chat.type_display}")
+        icon_prefix = "❤️" if self.chat.is_favorites else "🎵"
+        type_label = QLabel(f"{icon_prefix} {self.chat.type_display}")
         type_label.setStyleSheet("color: #7f91a4; font-size: 12px;")
 
         info_layout.addWidget(title_label)
@@ -103,7 +50,7 @@ class ChatItemWidget(QWidget):
 
 
 class OwnedChatListWidget(QListWidget):
-    """List widget holding user owned music channels with search capability."""
+    """List widget holding user owned music channels with pinned Favorites entry."""
 
     chat_selected = Signal(OwnedChat)
     search_requested = Signal(str)
@@ -136,13 +83,11 @@ class OwnedChatListWidget(QListWidget):
         """)
         self.itemClicked.connect(self._on_item_clicked)
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def set_chats(self, chats: list[OwnedChat]) -> None:
-        """Set the full list of chats and render them."""
-        self._all_chats = list(chats)
+        """Set the full list of chats, always keeping Favorites pinned at the top."""
+        favorites_chat = get_favorites_chat()
+        other_chats = [c for c in chats if not c.is_favorites]
+        self._all_chats = [favorites_chat] + other_chats
         self._populate(self._all_chats)
 
     def filter_chats(self, query: str) -> None:
@@ -154,14 +99,13 @@ class OwnedChatListWidget(QListWidget):
             filtered = [
                 chat
                 for chat in self._all_chats
-                if self._current_query in chat.title.lower()
+                if self._current_query in chat.title.lower() or chat.is_favorites
             ]
             self._populate(filtered)
 
         self.search_requested.emit(query.strip())
 
     def set_active_chat(self, chat_id: int | None) -> None:
-        """Highlight the selected chat."""
         self._active_chat_id = chat_id
         for i in range(self.count()):
             item = self.item(i)
@@ -169,27 +113,6 @@ class OwnedChatListWidget(QListWidget):
             if isinstance(widget, ChatItemWidget):
                 is_active = (widget.chat.id == chat_id)
                 item.setSelected(is_active)
-
-    def update_chat_cover(self, chat_id: int, cover_path: str) -> None:
-        pass
-
-    def scroll_to_chat(self, chat_id: int) -> None:
-        """Scroll to a specific chat item."""
-        for i in range(self.count()):
-            item = self.item(i)
-            widget = self.itemWidget(item)
-            if isinstance(widget, ChatItemWidget) and widget.chat.id == chat_id:
-                self.scrollToItem(item, QListWidget.ScrollHint.PositionAtCenter)
-                break
-
-    def restore_normal_chats(self) -> None:
-        """Restore the original chat list (after search)."""
-        self._populate(self._all_chats)
-        self._current_query = ""
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
     def _populate(self, chats: list[OwnedChat]) -> None:
         self.clear()

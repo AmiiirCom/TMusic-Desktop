@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("tmusic.player.service")
 
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+
 
 class PlayerService(QObject):
     """Core audio playback service managing QtMultimedia, progressive streams, and queue lifecycle."""
@@ -215,24 +217,27 @@ class PlayerService(QObject):
             logger.warning("Could not set player source (%s): %s", url, exc)
 
     def _find_existing_download_on_disk(self, track: Track) -> Path | None:
-        persisted = self._settings.get_downloaded_track_path(track.id, track.file_id)
-        if persisted:
-            p = Path(persisted)
-            if p.exists() and p.stat().st_size > 0:
-                return p
+        try:
+            persisted = self._settings.get_downloaded_track_path(track.id, track.file_id)
+            if persisted:
+                p = Path(persisted)
+                if p.is_file() and p.stat().st_size > 0:
+                    return p
 
-        mem_cached = self._cached_paths.get(track.file_id)
-        if mem_cached:
-            p = Path(mem_cached)
-            if p.exists() and p.stat().st_size > 0:
-                return p
+            mem_cached = self._cached_paths.get(track.file_id)
+            if mem_cached:
+                p = Path(mem_cached)
+                if p.is_file() and p.stat().st_size > 0:
+                    return p
 
-        ext = Path(track.file_name).suffix or ".mp3"
-        clean_target = self._config.downloads_dir / sanitize_filename(
-            f"{track.display_artist} - {track.display_title}{ext}"
-        )
-        if clean_target.exists() and clean_target.stat().st_size > 0:
-            return clean_target
+            ext = Path(track.file_name).suffix or ".mp3"
+            clean_target = self._config.downloads_dir / sanitize_filename(
+                f"{track.display_artist} - {track.display_title}{ext}"
+            )
+            if clean_target.is_file() and clean_target.stat().st_size > 0:
+                return clean_target
+        except OSError:
+            pass
 
         return None
 
@@ -280,10 +285,19 @@ class PlayerService(QObject):
             return
 
         internal_path = Path(internal_path_str)
-        if not internal_path.exists() or internal_path.stat().st_size == 0:
+
+        # 1. Skip image files immediately before attempting disk stats
+        if internal_path.suffix.lower() in IMAGE_EXTENSIONS:
             return
 
-        if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+        # 2. Check existence and file size safely against race conditions
+        try:
+            if not internal_path.is_file():
+                return
+            src_size = internal_path.stat().st_size
+            if src_size == 0:
+                return
+        except OSError:
             return
 
         if not self._settings.preferences.save_to_downloads:
@@ -305,7 +319,6 @@ class PlayerService(QObject):
             dest_file = self._config.downloads_dir / clean_name
             track_id = f"0_{file_id}"
 
-        src_size = internal_path.stat().st_size
         try:
             self._config.downloads_dir.mkdir(parents=True, exist_ok=True)
             if has_sufficient_disk_space(self._config.downloads_dir, src_size):

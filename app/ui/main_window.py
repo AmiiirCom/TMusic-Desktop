@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 
 from app.cache.service import CacheManager
 from app.config import AppConfig
-from app.models.chat import OwnedChat
+from app.models.chat import FAVORITES_CHAT_ID, OwnedChat
 from app.models.track import Track
 from app.network.meter import NetworkMeter
 from app.network.stream_server import LocalStreamServer
@@ -250,18 +250,33 @@ class MainWindow(QMainWindow):
 
     @Slot(object, list, bool)
     def _on_initial_tracks_loaded(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
-        self._main_view.set_initial_tracks(tracks, has_more=has_more)
-        self._player.set_playlist(tracks)
+        active = self._main_view._active_chat
+        if active is not None:
+            is_curr_chat = (active.id == chat_id)
+            is_fav = (active.is_favorites and chat_id == FAVORITES_CHAT_ID)
+            if is_curr_chat or is_fav:
+                self._main_view.set_initial_tracks(tracks, has_more=has_more)
+                self._player.set_playlist(tracks)
 
     @Slot(object, list, bool)
     def _on_tracks_appended(self, chat_id: int, new_tracks: list[Track], has_more: bool) -> None:
-        self._main_view.append_tracks(new_tracks, has_more=has_more)
-        self._player.append_to_playlist(new_tracks)
+        active = self._main_view._active_chat
+        if active is not None:
+            is_curr_chat = (active.id == chat_id)
+            is_fav = (active.is_favorites and chat_id == FAVORITES_CHAT_ID)
+            if is_curr_chat or is_fav:
+                self._main_view.append_tracks(new_tracks, has_more=has_more)
+                self._player.append_to_playlist(new_tracks)
 
     @Slot(object, list)
     def _on_tracks_prepended(self, chat_id: int, new_tracks: list[Track]) -> None:
-        self._main_view.prepend_tracks(new_tracks)
-        self._player.prepend_to_playlist(new_tracks)
+        active = self._main_view._active_chat
+        if active is not None:
+            is_curr_chat = (active.id == chat_id)
+            is_fav = (active.is_favorites and chat_id == FAVORITES_CHAT_ID)
+            if is_curr_chat or is_fav:
+                self._main_view.prepend_tracks(new_tracks)
+                self._player.prepend_to_playlist(new_tracks)
 
     @Slot(Track)
     def _on_track_selected(self, track: Track) -> None:

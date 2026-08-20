@@ -5,7 +5,7 @@ from app.models.track import Track
 
 
 class QueueManager(QObject):
-    """Manages playlist queue, track indexing, and reactions state."""
+    """Manages playlist queue, sequential track navigation with end-of-list repeat, and reactions."""
 
     playlist_updated = Signal(list)
     track_changed = Signal(object)
@@ -79,22 +79,39 @@ class QueueManager(QObject):
         self._sync_index(track.id)
 
     def get_next_track(self) -> Track | None:
+        """
+        Advance to the next track sequentially.
+        If at the end of the playlist, repeat the current/last track.
+        """
         if not self._playlist:
             return None
-        self._current_index = (self._current_index + 1) % len(self._playlist)
-        return self._playlist[self._current_index]
+
+        if self._current_index + 1 < len(self._playlist):
+            self._current_index += 1
+            return self._playlist[self._current_index]
+        else:
+            # Reached end of playlist: repeat the current/last track
+            if 0 <= self._current_index < len(self._playlist):
+                return self._playlist[self._current_index]
+            return self._playlist[-1]
 
     def get_previous_track(self) -> Track | None:
+        """Move to the previous track sequentially."""
         if not self._playlist:
             return None
-        self._current_index = (self._current_index - 1 + len(self._playlist)) % len(self._playlist)
-        return self._playlist[self._current_index]
+
+        if self._current_index - 1 >= 0:
+            self._current_index -= 1
+            return self._playlist[self._current_index]
+        else:
+            return self._playlist[0]
 
     def get_upcoming_track(self) -> Track | None:
         if not self._playlist or len(self._playlist) <= 1:
             return None
-        next_idx = (self._current_index + 1) % len(self._playlist)
-        return self._playlist[next_idx]
+        if self._current_index + 1 < len(self._playlist):
+            return self._playlist[self._current_index + 1]
+        return None
 
     def update_cover(self, track_id: str, cover_path: str) -> None:
         for idx, t in enumerate(self._playlist):

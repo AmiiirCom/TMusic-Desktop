@@ -5,7 +5,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from app.config import AppConfig
-from app.models.chat import OwnedChat
+from app.models.chat import FAVORITES_CHAT_ID, OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
 from app.settings.service import ProxySettings, SettingsService
@@ -15,7 +15,9 @@ from app.telegram.chat_handler import ChatHandler
 from app.telegram.connection_manager import ConnectionManager
 from app.telegram.enums import AuthState
 from app.telegram.media_handler import MediaHandler
+from app.telegram.reactions import extract_heart_reaction
 from app.telegram.track_handler import TrackHandler
+from app.telegram.track_parser import parse_message_to_track
 from app.telegram.user_handler import UserHandler
 from app.telegram.worker import TDLibWorker
 
@@ -23,7 +25,7 @@ logger = logging.getLogger("tmusic.telegram.service")
 
 
 class TelegramService(QObject):
-    """High-level Telegram service orchestrating authentication, user profile, chats, tracks, and media."""
+    """High-level Telegram service orchestrating authentication, profile, chats, tracks, and media."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -90,13 +92,13 @@ class TelegramService(QObject):
             cache_manager=self._cache,
             on_audio_progress=self.file_download_progress.emit,
             on_audio_completed=self.file_download_completed.emit,
-            on_cover_completed=self.cover_downloaded.emit,
+            on_cover_completed=self._on_cover_completed,
         )
 
         self._chats = ChatHandler(
             adapter=self._adapter,
             settings_service=self._settings,
-            on_owned_chats_updated=self.owned_chats_loaded.emit,
+            on_owned_chats_updated=self._on_owned_chats_loaded,
             on_search_results=self.chat_search_results_received.emit,
         )
 
@@ -104,12 +106,12 @@ class TelegramService(QObject):
             adapter=self._adapter,
             request_cover_download=self._media.download_cover_file,
             register_file_path=self._media.register_completed_path,
-            on_initial_chunk_loaded=self.tracks_loaded.emit,
-            on_lazy_chunk_appended=self.tracks_appended.emit,
-            on_delta_tracks_prepended=self.tracks_prepended.emit,
+            on_initial_chunk_loaded=self._on_initial_tracks_loaded,
+            on_lazy_chunk_appended=self._on_lazy_tracks_appended,
+            on_delta_tracks_prepended=self._on_delta_tracks_prepended,
             on_tracks_deleted=self.tracks_deleted.emit,
             on_search_results=self.search_results_received.emit,
-            on_track_reaction_updated=self.track_reaction_updated.emit,
+            on_track_reaction_updated=self._on_track_reaction_updated,
         )
 
         self._net_timer = QTimer(self)
@@ -178,6 +180,9 @@ class TelegramService(QObject):
         logger.info("TelegramService worker started")
 
     def _open_chat(self, chat_id: int) -> None:
+        if chat_id == FAVORITES_CHAT_ID:
+            return
+
         if self._current_opened_chat_id == chat_id:
             return
         if self._current_opened_chat_id != 0 and self._adapter.is_loaded:
@@ -200,9 +205,191 @@ class TelegramService(QObject):
                 "@extra": "periodic_net_stats",
             })
 
+    def _sync_liked_tracks_from_list(self, tracks: list[Track]) -> None:
+        if not self._settings:
+            return
+        for t in tracks:
+            if t.is_liked:
+                self._settings.save_liked_track(t)
+
+    def _on_initial_tracks_loaded(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
+        self._sync_liked_tracks_from_list(tracks)
+        self.tracks_loaded.emit(chat_id, tracks, has_more)
+
+    def _on_lazy_tracks_appended(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
+        self._sync_liked_tracks_from_list(tracks)
+        self.tracks_appended.emit(chat_id, tracks, has_more)
+
+    def _on_delta_tracks_prepended(self, chat_id: int, tracks: list[Track]) -> None:
+        self._sync_liked_tracks_from_list(tracks)
+        self.tracks_prepended.emit(chat_id, tracks)
+
+    def _on_cover_completed(self, track_id: str, cover_path: str) -> None:
+        if self._settings:
+            self._settings.update_liked_track_cover(track_id, cover_path)
+        self.cover_downloaded.emit(track_id, cover_path)
+
+    def _on_owned_chats_loaded(self, chats: list[OwnedChat]) -> None:
+        self.owned_chats_loaded.emit(chats)
+        self.sync_favorites_from_telegram()
+
+    def sync_favorites_from_telegram(self) -> None:
+        """Fetch and deeply sync liked audio tracks across owned music chats with full reaction verification."""
+        if not self._adapter.is_loaded:
+            return
+
+        owned_chats = self._chats.get_all_owned_chats()
+        if not owned_chats:
+            self._adapter.send({
+                "@type": "searchMessages",
+                "chat_list": {"@type": "chatListMain"},
+                "query": "",
+                "offset": "",
+                "limit": 100,
+                "filter": {"@type": "searchMessagesFilterAudio"},
+                "@extra": "sync_favorites_global",
+            })
+            return
+
+        for chat in owned_chats:
+            if not chat.is_favorites:
+                self._fetch_favorites_page(chat.id, from_message_id=0)
+
+    def _fetch_favorites_page(self, chat_id: int, from_message_id: int) -> None:
+        """Request audio messages page and open chat context to force reaction synchronization."""
+        if not self._adapter.is_loaded:
+            return
+
+        # Ensure TDLib knows the chat context to fetch interactions
+        self._adapter.send({"@type": "openChat", "chat_id": chat_id})
+
+        self._adapter.send({
+            "@type": "searchChatMessages",
+            "chat_id": chat_id,
+            "query": "",
+            "from_message_id": from_message_id,
+            "offset": 0,
+            "limit": 100,
+            "filter": {"@type": "searchMessagesFilterAudio"},
+            "@extra": f"sync_favorites_chat_{chat_id}_{from_message_id}",
+        })
+
+    def _on_track_reaction_updated(
+        self, chat_id: int, message_id: int, is_liked: bool, heart_count: int
+    ) -> None:
+        track_id = f"{chat_id}_{message_id}"
+        if is_liked:
+            track = self._tracks.get_track(chat_id, message_id)
+            if track:
+                updated_track = Track(
+                    id=track.id,
+                    chat_id=track.chat_id,
+                    message_id=track.message_id,
+                    file_id=track.file_id,
+                    title=track.title,
+                    artist=track.artist,
+                    duration_seconds=track.duration_seconds,
+                    size_bytes=track.size_bytes,
+                    file_name=track.file_name,
+                    mime_type=track.mime_type,
+                    local_path=track.local_path,
+                    is_downloaded=track.is_downloaded,
+                    date_timestamp=track.date_timestamp,
+                    minithumbnail_data=track.minithumbnail_data,
+                    cover_file_id=track.cover_file_id,
+                    cover_path=track.cover_path,
+                    is_liked=True,
+                    heart_count=heart_count,
+                )
+                if self._settings:
+                    self._settings.save_liked_track(updated_track)
+                self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
+            else:
+                if self._adapter.is_loaded:
+                    self._adapter.send({
+                        "@type": "getMessage",
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "@extra": f"fetch_liked_msg_{chat_id}_{message_id}",
+                    })
+        else:
+            # Unliked on Telegram: remove from storage AND emit deletion signal immediately
+            if self._settings:
+                self._settings.remove_liked_track(track_id)
+            self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track_id])
+
+        self.track_reaction_updated.emit(chat_id, message_id, is_liked, heart_count)
+
     def _handle_update(self, update: dict[str, Any]) -> None:
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
+
+        # Handle deep favorites history scan and force live reaction fetching via viewMessages
+        if isinstance(extra, str) and (extra.startswith("sync_favorites_chat_") or extra == "sync_favorites_global"):
+            if update_type in ("foundChatMessages", "foundMessages", "messages"):
+                messages = update.get("messages", [])
+                next_from_id = update.get("next_from_message_id", 0)
+                cid = 0
+                if extra.startswith("sync_favorites_chat_"):
+                    parts = extra.split("_")
+                    if len(parts) >= 4:
+                        try:
+                            cid = int(parts[3])
+                        except ValueError:
+                            cid = 0
+
+                # Force TDLib & Telegram servers to deliver reactions for all returned messages
+                msg_ids = [m["id"] for m in messages if isinstance(m, dict) and "id" in m]
+                if msg_ids and cid != 0 and self._adapter.is_loaded:
+                    self._adapter.send({
+                        "@type": "viewMessages",
+                        "chat_id": cid,
+                        "message_ids": msg_ids,
+                        "force_read": False,
+                    })
+
+                has_changes = False
+                for msg in messages:
+                    msg_cid = msg.get("chat_id", cid)
+                    track = parse_message_to_track(
+                        msg_cid, msg, request_cover_callback=None, register_path_callback=self._media.register_completed_path
+                    )
+                    if track:
+                        # STRICT CHECK: Only if chosen by the current authenticated user
+                        if track.is_liked:
+                            if self._settings:
+                                self._settings.save_liked_track(track)
+                                has_changes = True
+                        else:
+                            if self._settings and any(lt.id == track.id for lt in self._settings.get_liked_tracks()):
+                                self._settings.remove_liked_track(track.id)
+                                self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track.id])
+                                has_changes = True
+
+                if has_changes and self._settings:
+                    liked_tracks = self._settings.get_liked_tracks()
+                    self.tracks_loaded.emit(FAVORITES_CHAT_ID, liked_tracks, False)
+
+                # Recursively continue scanning next history pages
+                if next_from_id != 0 and cid != 0:
+                    self._fetch_favorites_page(cid, from_message_id=next_from_id)
+            return
+
+        # Handle individual message fetch for remote likes
+        if isinstance(extra, str) and extra.startswith("fetch_liked_msg_"):
+            if update_type == "message":
+                chat_id = update.get("chat_id", 0)
+                track = parse_message_to_track(
+                    chat_id, update, self._media.download_cover_file, self._media.register_completed_path
+                )
+                if track:
+                    is_liked, count = extract_heart_reaction(update)
+                    if is_liked:
+                        if self._settings:
+                            self._settings.save_liked_track(track)
+                        self.track_reaction_updated.emit(track.chat_id, track.message_id, True, count)
+                        self.tracks_prepended.emit(FAVORITES_CHAT_ID, [track])
+            return
 
         if isinstance(extra, str) and extra.startswith("react_") and update_type == "error":
             parts = extra.split("_")
@@ -225,8 +412,19 @@ class TelegramService(QObject):
             chat_id = int(parts[2])
             is_initial = parts[3] == "initial"
             if update_type in ("foundChatMessages", "messages"):
+                messages = update.get("messages", [])
+                # Trigger live interaction refresh
+                msg_ids = [m["id"] for m in messages if isinstance(m, dict) and "id" in m]
+                if msg_ids and self._adapter.is_loaded:
+                    self._adapter.send({
+                        "@type": "viewMessages",
+                        "chat_id": chat_id,
+                        "message_ids": msg_ids,
+                        "force_read": False,
+                    })
+
                 self._tracks.process_search_response(
-                    chat_id, update.get("messages", []), update.get("next_from_message_id", 0), is_initial
+                    chat_id, messages, update.get("next_from_message_id", 0), is_initial
                 )
             elif update_type == "error" and is_initial:
                 self.tracks_loaded.emit(chat_id, [], False)
@@ -280,21 +478,28 @@ class TelegramService(QObject):
                 self.connection_state_changed.emit(state)
 
             case "updateNewMessage":
-                self._tracks.process_new_message(update.get("message", {}))
+                msg = update.get("message", {})
+                self._tracks.process_new_message(msg)
 
             case "updateDeleteMessages":
                 if update.get("is_permanent", True) and not update.get("from_cache", False):
                     self._tracks.process_delete_messages(update.get("chat_id", 0), update.get("message_ids", []))
 
             case "updateMessageInteractionInfo":
-                self._tracks.process_interaction_info_update(
-                    update.get("chat_id", 0), update.get("message_id", 0), update.get("interaction_info")
-                )
+                cid = update.get("chat_id", 0)
+                mid = update.get("message_id", 0)
+                info = update.get("interaction_info")
+                self._tracks.process_interaction_info_update(cid, mid, info)
+                is_liked, count = extract_heart_reaction(info)
+                self._on_track_reaction_updated(cid, mid, is_liked, count)
 
             case "updateMessageReactions":
-                self._tracks.process_reactions_update(
-                    update.get("chat_id", 0), update.get("message_id", 0), update.get("reactions")
-                )
+                cid = update.get("chat_id", 0)
+                mid = update.get("message_id", 0)
+                reactions = update.get("reactions")
+                self._tracks.process_reactions_update(cid, mid, reactions)
+                is_liked, count = extract_heart_reaction({"reactions": reactions})
+                self._on_track_reaction_updated(cid, mid, is_liked, count)
 
             case "updateFile":
                 file_obj = update.get("file", {})
@@ -303,6 +508,7 @@ class TelegramService(QObject):
                 if local.get("is_downloading_completed") and local.get("path"):
                     if fid == self._user_handler.avatar_file_id:
                         self._user_handler.handle_avatar_file(Path(local.get("path")))
+                        return
                     self._media.process_file_update(file_obj)
 
             case "user":
@@ -335,6 +541,7 @@ class TelegramService(QObject):
     def _on_auth_ready(self) -> None:
         self.set_online_status(True)
         self._chats.start_chat_sync()
+        self.sync_favorites_from_telegram()
 
     def _on_auth_closed(self) -> None:
         self._net_timer.stop()
@@ -368,22 +575,75 @@ class TelegramService(QObject):
     def toggle_track_like(self, track: Track) -> None:
         next_liked = not track.is_liked
         next_count = max(0, track.heart_count + (1 if next_liked else -1))
-        self._open_chat(track.chat_id)
+
+        if self._settings:
+            if next_liked:
+                updated_track = Track(
+                    id=track.id,
+                    chat_id=track.chat_id,
+                    message_id=track.message_id,
+                    file_id=track.file_id,
+                    title=track.title,
+                    artist=track.artist,
+                    duration_seconds=track.duration_seconds,
+                    size_bytes=track.size_bytes,
+                    file_name=track.file_name,
+                    mime_type=track.mime_type,
+                    local_path=track.local_path,
+                    is_downloaded=track.is_downloaded,
+                    date_timestamp=track.date_timestamp,
+                    minithumbnail_data=track.minithumbnail_data,
+                    cover_file_id=track.cover_file_id,
+                    cover_path=track.cover_path,
+                    is_liked=True,
+                    heart_count=next_count,
+                )
+                self._settings.save_liked_track(updated_track)
+                self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
+            else:
+                self._settings.remove_liked_track(track.id)
+                self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track.id])
+
+        if track.chat_id != FAVORITES_CHAT_ID:
+            self._open_chat(track.chat_id)
         self.track_reaction_updated.emit(track.chat_id, track.message_id, next_liked, next_count)
         self._tracks.toggle_track_like(track.chat_id, track.message_id, track.is_liked)
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
+        if chat_id == FAVORITES_CHAT_ID:
+            # 1. Immediately emit current cached favorites with zero UI lag
+            liked_tracks = self._settings.get_liked_tracks() if self._settings else []
+            self.tracks_loaded.emit(FAVORITES_CHAT_ID, liked_tracks, False)
+            # 2. Fast background deep-sync across full history from Telegram servers
+            self.sync_favorites_from_telegram()
+            return
+
         if reset:
             self._open_chat(chat_id)
         self._tracks.load_chat_tracks(chat_id, reset=reset, chunk_size=chunk_size)
 
     def load_more_tracks(self, chat_id: int) -> None:
+        if chat_id == FAVORITES_CHAT_ID:
+            return
         self._tracks.load_chat_tracks(chat_id, reset=False)
 
     @Slot(str, str)
     def search_tracks(self, chat_id_str: str, query: str) -> None:
         try:
             cid = int(chat_id_str)
+            if cid == FAVORITES_CHAT_ID:
+                if self._settings:
+                    liked = self._settings.get_liked_tracks()
+                    q = query.strip().lower()
+                    filtered = [
+                        t for t in liked
+                        if q in t.display_title.lower() or q in t.display_artist.lower()
+                    ]
+                    self.search_results_received.emit(FAVORITES_CHAT_ID, filtered, False)
+                else:
+                    self.search_results_received.emit(FAVORITES_CHAT_ID, [], False)
+                return
+
             self._tracks.search_tracks(cid, query)
         except ValueError:
             pass

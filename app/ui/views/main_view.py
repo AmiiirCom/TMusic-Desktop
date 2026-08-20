@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
-from app.models.chat import OwnedChat
+from app.models.chat import FAVORITES_CHAT_ID, OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
 from app.settings.service import ProxySettings
@@ -50,6 +50,11 @@ class MainView(QWidget):
 
         self._init_ui()
         self._init_timers()
+
+    @property
+    def _is_active_chat_favorites(self) -> bool:
+        """Type-safe guard checking if currently selected active chat is Favorites."""
+        return self._active_chat is not None and self._active_chat.is_favorites
 
     def _init_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -150,12 +155,12 @@ class MainView(QWidget):
     def _init_timers(self) -> None:
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(500)
+        self._search_timer.setInterval(400)
         self._search_timer.timeout.connect(self._perform_full_search)
 
         self._chat_search_timer = QTimer(self)
         self._chat_search_timer.setSingleShot(True)
-        self._chat_search_timer.setInterval(500)
+        self._chat_search_timer.setInterval(400)
         self._chat_search_timer.timeout.connect(self._perform_chat_search)
 
     def set_connection_state(self, state: str, proxy: ProxySettings | None = None) -> None:
@@ -192,8 +197,17 @@ class MainView(QWidget):
 
     @Slot(object, object, bool, int)
     def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
-        self.track_list.update_track_reaction(chat_id, message_id, is_liked, heart_count)
-        if self.player_bar._current_track and self.player_bar._current_track.id == f"{chat_id}_{message_id}":
+        track_id = f"{chat_id}_{message_id}"
+
+        if self._is_active_chat_favorites:
+            if not is_liked:
+                self.remove_tracks(FAVORITES_CHAT_ID, [track_id])
+            else:
+                self.track_list.update_track_reaction(chat_id, message_id, is_liked, heart_count)
+        else:
+            self.track_list.update_track_reaction(chat_id, message_id, is_liked, heart_count)
+
+        if self.player_bar._current_track and self.player_bar._current_track.id == track_id:
             self.player_bar.update_reaction(is_liked, heart_count)
 
     def set_network_stats(self, speed_str: str, total_str: str) -> None:
@@ -227,16 +241,30 @@ class MainView(QWidget):
             self._is_searching = False
             self._original_tracks = []
         elif not self._original_tracks:
-            self.placeholder_msg.setText("هیچ موزیکی در این پلی لیست یافت نشد! 📂")
+            empty_text = (
+                "هنوز هیچ آهنگی را لایک نکرده‌اید! ❤️"
+                if self._is_active_chat_favorites
+                else "هیچ موزیکی در این پلی لیست یافت نشد! 📂"
+            )
+            self.placeholder_msg.setText(empty_text)
             self.content_stack.setCurrentIndex(0)
 
     def _on_internal_chat_selected(self, chat: OwnedChat) -> None:
         self._active_chat = chat
-        self.selected_chat_title.setText(f"{chat.title} ({chat.type_display})")
+        if chat.is_favorites:
+            self.selected_chat_title.setText("❤️ Favorites (موزیک‌های لایک‌شده)")
+        else:
+            self.selected_chat_title.setText(f"{chat.title} ({chat.type_display})")
+
         self.search_input.clear()
         self.search_input.show()
         self._search_timer.stop()
-        self.placeholder_msg.setText("در حال دریافت ترک‌ها... 🔄")
+        loading_text = (
+            "در حال بارگذاری موزیک‌های لایک‌شده... 🔄"
+            if chat.is_favorites
+            else "در حال دریافت ترک‌ها... 🔄"
+        )
+        self.placeholder_msg.setText(loading_text)
         self.content_stack.setCurrentIndex(0)
         self.chat_selected.emit(chat)
         self._is_searching = False
@@ -244,34 +272,64 @@ class MainView(QWidget):
         self.sidebar.chat_list.set_active_chat(chat.id)
 
     def set_initial_tracks(self, tracks: list[Track], has_more: bool) -> None:
+        if self._active_chat is None:
+            return
+
         if not tracks:
-            self.placeholder_msg.setText("هیچ موزیکی در این پلی لیست یافت نشد! 📂")
+            empty_text = (
+                "هنوز هیچ آهنگی را لایک نکرده‌اید! ❤️"
+                if self._is_active_chat_favorites
+                else "هیچ موزیکی در این پلی لیست یافت نشد! 📂"
+            )
+            self.placeholder_msg.setText(empty_text)
             self.content_stack.setCurrentIndex(0)
             return
+
         self.track_list.set_tracks(tracks, has_more=has_more)
         self.content_stack.setCurrentIndex(1)
         self._original_tracks = list(tracks)
         self._is_searching = False
 
     def append_tracks(self, new_tracks: list[Track], has_more: bool) -> None:
+        if self._active_chat is None:
+            return
+
         self.track_list.append_tracks(new_tracks, has_more=has_more)
         if not self._is_searching:
             self._original_tracks.extend(new_tracks)
+        if self.track_list.count() > 0 and self.content_stack.currentIndex() == 0:
+            self.content_stack.setCurrentIndex(1)
 
     def prepend_tracks(self, new_tracks: list[Track]) -> None:
+        if self._active_chat is None:
+            return
+
         self.track_list.prepend_tracks(new_tracks)
         if not self._is_searching:
             self._original_tracks = new_tracks + self._original_tracks
+        if self.track_list.count() > 0 and self.content_stack.currentIndex() == 0:
+            self.content_stack.setCurrentIndex(1)
 
     def remove_tracks(self, chat_id: int, deleted_track_ids: list[str]) -> None:
-        if self._active_chat and self._active_chat.id == chat_id:
+        is_current_chat = self._active_chat is not None and self._active_chat.id == chat_id
+        is_favorites_view = self._is_active_chat_favorites and chat_id == FAVORITES_CHAT_ID
+
+        if is_current_chat or is_favorites_view:
             self.track_list.remove_tracks(deleted_track_ids)
-            if not self._is_searching:
-                del_set = set(deleted_track_ids)
-                self._original_tracks = [t for t in self._original_tracks if t.id not in del_set]
+            del_set = set(deleted_track_ids)
+            self._original_tracks = [t for t in self._original_tracks if t.id not in del_set]
+
+            if self.track_list.count() == 0:
+                empty_text = (
+                    "هنوز هیچ آهنگی را لایک نکرده‌اید! ❤️"
+                    if self._is_active_chat_favorites
+                    else "هیچ موزیکی در این پلی لیست یافت نشد! 📂"
+                )
+                self.placeholder_msg.setText(empty_text)
+                self.content_stack.setCurrentIndex(0)
 
     def _on_load_more_tracks(self) -> None:
-        if self._active_chat:
+        if self._active_chat is not None and not self._is_active_chat_favorites:
             self.load_more_tracks_requested.emit(self._active_chat.id)
 
     def _on_search_text_changed(self, text: str) -> None:
@@ -283,7 +341,7 @@ class MainView(QWidget):
 
     def _perform_full_search(self) -> None:
         query = self.search_input.text().strip()
-        if self._active_chat and query:
+        if self._active_chat is not None and query:
             self.content_stack.setCurrentIndex(2)
             self.search_full_requested.emit(str(self._active_chat.id), query)
 

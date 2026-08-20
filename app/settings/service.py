@@ -7,6 +7,7 @@ from typing import Any
 from app.config import AppConfig
 from app.core.security import CryptoManager
 from app.models.chat import OwnedChat
+from app.models.track import Track
 from app.models.user import TelegramUser
 from app.settings.detector import detect_system_proxy
 from app.settings.models import ProxySettings, UserPreferences
@@ -65,6 +66,7 @@ class SettingsService:
                 cached_music_chats=data.get("cached_music_chats", []),
                 cached_user_profile=data.get("cached_user_profile", {}),
                 downloaded_tracks_map=data.get("downloaded_tracks_map", {}),
+                liked_tracks=data.get("liked_tracks", []),
             )
             logger.info("Loaded secure encrypted preferences successfully.")
         except Exception as exc:
@@ -82,8 +84,101 @@ class SettingsService:
             "cached_music_chats": self._preferences.cached_music_chats,
             "cached_user_profile": self._preferences.cached_user_profile,
             "downloaded_tracks_map": self._preferences.downloaded_tracks_map,
+            "liked_tracks": self._preferences.liked_tracks,
         }
         self._crypto.save_encrypted_json(self._settings_file, payload)
+
+    # ------------------------------------------------------------------
+    # Liked / Favorites Tracks Management
+    # ------------------------------------------------------------------
+
+    def get_liked_tracks(self) -> list[Track]:
+        """Retrieve all persisted liked tracks as domain objects."""
+        results: list[Track] = []
+        for item in self._preferences.liked_tracks:
+            try:
+                minithumb = (
+                    base64.b64decode(item["minithumbnail_data"])
+                    if item.get("minithumbnail_data")
+                    else None
+                )
+                track = Track(
+                    id=item["id"],
+                    chat_id=item["chat_id"],
+                    message_id=item["message_id"],
+                    file_id=item["file_id"],
+                    title=item["title"],
+                    artist=item["artist"],
+                    duration_seconds=item["duration_seconds"],
+                    size_bytes=item["size_bytes"],
+                    file_name=item["file_name"],
+                    mime_type=item.get("mime_type", "audio/mpeg"),
+                    local_path=item.get("local_path"),
+                    is_downloaded=item.get("is_downloaded", False),
+                    date_timestamp=item.get("date_timestamp", 0),
+                    minithumbnail_data=minithumb,
+                    cover_file_id=item.get("cover_file_id", 0),
+                    cover_path=item.get("cover_path"),
+                    is_liked=True,
+                    heart_count=item.get("heart_count", 1),
+                )
+                results.append(track)
+            except Exception as exc:
+                logger.debug("Error deserializing liked track: %s", exc)
+        return results
+
+    def save_liked_track(self, track: Track) -> None:
+        """Register or update a liked track in persistent storage."""
+        minithumb_str = (
+            base64.b64encode(track.minithumbnail_data).decode("ascii")
+            if track.minithumbnail_data
+            else None
+        )
+        track_dict: dict[str, Any] = {
+            "id": track.id,
+            "chat_id": track.chat_id,
+            "message_id": track.message_id,
+            "file_id": track.file_id,
+            "title": track.title,
+            "artist": track.artist,
+            "duration_seconds": track.duration_seconds,
+            "size_bytes": track.size_bytes,
+            "file_name": track.file_name,
+            "mime_type": track.mime_type,
+            "local_path": track.local_path,
+            "is_downloaded": track.is_downloaded,
+            "date_timestamp": track.date_timestamp,
+            "minithumbnail_data": minithumb_str,
+            "cover_file_id": track.cover_file_id,
+            "cover_path": track.cover_path,
+            "is_liked": True,
+            "heart_count": track.heart_count,
+        }
+
+        # Replace existing or prepend to maintain reverse-chronological order
+        updated_list = [t for t in self._preferences.liked_tracks if t.get("id") != track.id]
+        updated_list.insert(0, track_dict)
+        self._preferences.liked_tracks = updated_list
+        self.save()
+
+    def remove_liked_track(self, track_id: str) -> None:
+        """Remove an unliked track from persistent storage."""
+        self._preferences.liked_tracks = [
+            t for t in self._preferences.liked_tracks if t.get("id") != track_id
+        ]
+        self.save()
+
+    def update_liked_track_cover(self, track_id: str, cover_path: str) -> None:
+        """Update cover path for a liked track in persistent storage."""
+        for t in self._preferences.liked_tracks:
+            if t.get("id") == track_id:
+                t["cover_path"] = cover_path
+                self.save()
+                break
+
+    # ------------------------------------------------------------------
+    # Other settings methods
+    # ------------------------------------------------------------------
 
     def register_downloaded_track(self, track_id: str, file_id: int, local_path: str) -> None:
         self._preferences.downloaded_tracks_map[track_id] = local_path
@@ -109,6 +204,7 @@ class SettingsService:
                 "unread_count": c.unread_count,
             }
             for c in chats
+            if not c.is_favorites
         ]
         self.save()
 

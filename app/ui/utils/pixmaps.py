@@ -2,6 +2,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 
+from app.models.chat import FAVORITES_CHAT_ID
+
 TELEGRAM_AVATAR_PALETTE: tuple[str, ...] = (
     "#e17076",
     "#faa774",
@@ -17,6 +19,8 @@ TELEGRAM_AVATAR_PALETTE: tuple[str, ...] = (
 
 
 def get_chat_avatar_color(chat_id: int) -> str:
+    if chat_id == FAVORITES_CHAT_ID:
+        return "#e53935"  # Vibrant Coral Red for Favorites
     idx = abs(chat_id) % len(TELEGRAM_AVATAR_PALETTE)
     return TELEGRAM_AVATAR_PALETTE[idx]
 
@@ -38,11 +42,17 @@ def create_chat_avatar_pixmap(title: str, chat_id: int, size: int = 42) -> QPixm
     bg_color = QColor(get_chat_avatar_color(chat_id))
     painter.fillRect(0, 0, render_size, render_size, bg_color)
 
-    letter = title.strip()[:1].upper() if title.strip() else "C"
-    painter.setPen(QColor("#ffffff"))
-    font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
-    painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+    if chat_id == FAVORITES_CHAT_ID:
+        painter.setPen(QColor("#ffffff"))
+        font = QFont("Segoe UI Emoji", 17 * scale, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "❤️")
+    else:
+        letter = title.strip()[:1].upper() if title.strip() else "C"
+        painter.setPen(QColor("#ffffff"))
+        font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
 
     painter.end()
     pixmap.setDevicePixelRatio(scale)

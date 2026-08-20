@@ -3,6 +3,9 @@ from app.models.chat import OwnedChat
 from app.models.user import TelegramUser
 from app.core.keywords import MusicKeyword, is_music_title
 from app.core.metadata import LYRICS_KEY_REGEX
+from app.models.chat import FAVORITES_CHAT_ID, OwnedChat, get_favorites_chat
+from app.player.queue_manager import QueueManager
+from app.models.track import Track
 
 
 def test_track_formatting() -> None:
@@ -109,3 +112,27 @@ def test_lyrics_key_regex_patterns() -> None:
     assert LYRICS_KEY_REGEX.match("artist") is None
     assert LYRICS_KEY_REGEX.match("album") is None
     assert LYRICS_KEY_REGEX.match("comment") is None
+    
+def test_favorites_chat_properties() -> None:
+    fav = get_favorites_chat()
+    assert fav.id == FAVORITES_CHAT_ID
+    assert fav.is_favorites is True
+    assert fav.type_display == "علاقه‌مندی‌ها"
+    assert fav.title == "Favorites"
+
+
+def test_queue_manager_end_of_playlist_repeat() -> None:
+    queue = QueueManager()
+    t1 = Track(id="1_1", chat_id=1, message_id=1, file_id=10, title="Song 1", artist="Artist", duration_seconds=100, size_bytes=1000, file_name="s1.mp3")
+    t2 = Track(id="1_2", chat_id=1, message_id=2, file_id=20, title="Song 2", artist="Artist", duration_seconds=100, size_bytes=1000, file_name="s2.mp3")
+    
+    queue.set_playlist([t1, t2])
+    queue.set_active_track(t1)
+    
+    # 1. Advance to next track (t2)
+    next_t = queue.get_next_track()
+    assert next_t == t2
+    
+    # 2. At the end of playlist: must repeat t2 (not loop to t1)
+    repeat_t = queue.get_next_track()
+    assert repeat_t == t2

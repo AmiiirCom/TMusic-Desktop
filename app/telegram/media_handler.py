@@ -8,6 +8,8 @@ from app.telegram.adapter import TDLibAdapter
 
 logger = logging.getLogger("tmusic.telegram.media")
 
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+
 
 class MediaHandler:
     """Manages audio file streaming downloads, HD cover art, and immediate completion dispatching."""
@@ -38,18 +40,23 @@ class MediaHandler:
 
     def get_downloaded_path(self, file_id: int) -> str | None:
         path = self._file_id_to_path.get(file_id)
-        if path and Path(path).exists():
-            return path
+        if path:
+            p = Path(path)
+            if p.is_file():
+                return path
         return None
 
     def register_completed_path(self, file_id: int, path: str) -> None:
-        if path and Path(path).exists():
-            self._file_id_to_path[file_id] = path
+        if path:
+            p = Path(path)
+            if p.is_file():
+                self._file_id_to_path[file_id] = path
 
     def download_audio_file(self, file_id: int) -> None:
         """Download with MAXIMUM priority (32) for immediate playback and export."""
-        if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
-            self._on_audio_completed(file_id, self._file_id_to_path[file_id])
+        existing = self.get_downloaded_path(file_id)
+        if existing:
+            self._on_audio_completed(file_id, existing)
             return
 
         self._downloading_audio_files.add(file_id)
@@ -65,7 +72,7 @@ class MediaHandler:
 
     def prefetch_audio_file(self, file_id: int) -> None:
         """Pre-download upcoming track with background priority (16)."""
-        if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
+        if self.get_downloaded_path(file_id):
             return
 
         self._downloading_audio_files.add(file_id)
@@ -85,8 +92,9 @@ class MediaHandler:
 
         self._cover_file_to_track_id[file_id] = track_id
 
-        if file_id in self._file_id_to_path and Path(self._file_id_to_path[file_id]).exists():
-            self._on_cover_completed(track_id, self._file_id_to_path[file_id])
+        existing = self.get_downloaded_path(file_id)
+        if existing:
+            self._on_cover_completed(track_id, existing)
             return
 
         self._adapter.send({
@@ -108,30 +116,31 @@ class MediaHandler:
 
         if is_completed and path:
             self._file_id_to_path[file_id] = path
+            file_path = Path(path)
 
             # Check if this file is a cover image (registered in cover map)
             track_id = self._cover_file_to_track_id.pop(file_id, None)
             if track_id:
-                # Compress the cover image before emitting
-                orig_path = Path(path)
-                if orig_path.exists():
+                if file_path.is_file():
                     compressed_path = get_compressed_image_path(
                         self._config.thumb_cache_dir,
                         "cover",
                         track_id.replace("_", "-")
                     )
-                    result = compress_image(orig_path, compressed_path)
+                    result = compress_image(file_path, compressed_path)
                     if result:
-                        # Register compressed file in cache manager
                         self._cache.add_file(file_id, result, file_type="thumb")
-                        # Delete original file via TDLib
                         self._delete_from_tdlib(file_id)
                         logger.debug("Cover compressed and cached: %s", result)
                         self._on_cover_completed(track_id, str(result))
                         return
-                # If compression fails, fallback to original
-                self._cache.add_file(file_id, orig_path, file_type="thumb")
+
+                self._cache.add_file(file_id, file_path, file_type="thumb")
                 self._on_cover_completed(track_id, path)
+                return
+
+            # Explicitly ignore any other image files (avatars, previews) from audio export
+            if file_path.suffix.lower() in IMAGE_EXTENSIONS:
                 return
 
             # Otherwise, treat as audio file -> trigger export to TMusicDownloads

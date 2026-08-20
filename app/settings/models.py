@@ -29,3 +29,4 @@ class UserPreferences:
     cached_music_chats: list[dict[str, Any]] = field(default_factory=list)
     cached_user_profile: dict[str, Any] = field(default_factory=dict)
     downloaded_tracks_map: dict[str, str] = field(default_factory=dict)
+    liked_tracks: list[dict[str, Any]] = field(default_factory=list)

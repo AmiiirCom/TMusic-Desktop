@@ -59,6 +59,15 @@ class TrackHandler:
             on_track_reaction_updated=self._on_track_reaction_updated,
         )
 
+    def get_track(self, chat_id: int, message_id: int) -> Track | None:
+        """Lookup an existing track instance in memory."""
+        state = self._track_pagination.get(chat_id)
+        if state:
+            for t in state.tracks:
+                if t.message_id == message_id:
+                    return t
+        return None
+
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
         if reset or chat_id not in self._track_pagination:
             state = ChatTrackPaginationState(chat_id=chat_id)
@@ -119,7 +128,6 @@ class TrackHandler:
                 if t.message_id == message_id:
                     new_count = heart_count if heart_count >= 0 else max(0, t.heart_count + (1 if is_liked else -1))
                     state.tracks[idx] = self._copy_track_with_like(t, is_liked, new_count)
-                    self._on_track_reaction_updated(chat_id, message_id, is_liked, new_count)
                     break
 
     def process_search_response(

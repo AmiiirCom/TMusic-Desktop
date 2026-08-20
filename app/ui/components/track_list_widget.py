@@ -94,7 +94,7 @@ def create_rounded_cover_pixmap(
 
 
 class TrackItemWidget(QWidget):
-    """Custom Telegram-styled track list item with like button and dynamic in-place state updating."""
+    """Custom Telegram-styled track list item with like button and dynamic state updating."""
 
     like_clicked = Signal(Track)
 
@@ -126,7 +126,6 @@ class TrackItemWidget(QWidget):
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.artist_label)
 
-        # Telegram-styled Heart Like Button
         self.btn_like = QPushButton()
         self.btn_like.setFixedSize(32, 32)
         self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -169,7 +168,6 @@ class TrackItemWidget(QWidget):
         self._apply_visual_state()
 
     def update_reaction(self, is_liked: bool, heart_count: int) -> None:
-        """Update reaction icon and count in-place."""
         self.track = Track(
             id=self.track.id,
             chat_id=self.track.chat_id,
@@ -291,7 +289,7 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget with in-place highlight switching and real-time reaction updates."""
+    """List widget with robust widget deletion and real-time state synchronization."""
 
     track_selected = Signal(Track)
     track_like_toggled = Signal(Track)
@@ -366,6 +364,7 @@ class TrackListWidget(QListWidget):
         if not self._current_query:
             for track in unique_new:
                 item = QListWidgetItem(self)
+                item.setData(Qt.ItemDataRole.UserRole, track.id)
                 is_active = track.id == self._active_track_id
                 widget = TrackItemWidget(track, is_active=is_active)
                 widget.like_clicked.connect(self.track_like_toggled.emit)
@@ -387,6 +386,7 @@ class TrackListWidget(QListWidget):
         if not self._current_query:
             for idx, track in enumerate(unique_new):
                 item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, track.id)
                 is_active = track.id == self._active_track_id
                 widget = TrackItemWidget(track, is_active=is_active)
                 widget.like_clicked.connect(self.track_like_toggled.emit)
@@ -398,17 +398,26 @@ class TrackListWidget(QListWidget):
             self.filter_tracks(self._current_query)
 
     def remove_tracks(self, deleted_track_ids: list[str]) -> None:
+        """Completely detach and destroy widgets for deleted tracks."""
         del_set = set(deleted_track_ids)
         self._all_tracks = [t for t in self._all_tracks if t.id not in del_set]
 
         for tid in deleted_track_ids:
             widget = self._track_widgets.pop(tid, None)
-            if widget:
-                for i in range(self.count()):
-                    item = self.item(i)
-                    if self.itemWidget(item) == widget:
-                        self.takeItem(i)
-                        break
+            for i in range(self.count()):
+                item = self.item(i)
+                if item and (item.data(Qt.ItemDataRole.UserRole) == tid or self.itemWidget(item) == widget):
+                    self.removeItemWidget(item)
+                    taken = self.takeItem(i)
+                    if widget:
+                        widget.hide()
+                        widget.setParent(None)
+                        widget.deleteLater()
+                    if taken:
+                        del taken
+                    break
+
+        self.viewport().update()
 
     def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
         """In-place update of reaction state without resetting scroll position."""
@@ -504,6 +513,7 @@ class TrackListWidget(QListWidget):
         self._track_widgets.clear()
         for track in tracks:
             item = QListWidgetItem(self)
+            item.setData(Qt.ItemDataRole.UserRole, track.id)
             is_active = track.id == self._active_track_id
             widget = TrackItemWidget(track, is_active=is_active)
             widget.like_clicked.connect(self.track_like_toggled.emit)
