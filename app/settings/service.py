@@ -30,7 +30,10 @@ class UserPreferences:
     proxy: ProxySettings = field(default_factory=ProxySettings)
     cached_music_chats: list[dict[str, Any]] = field(default_factory=list)
     cached_user_profile: dict[str, Any] = field(default_factory=dict)
-    downloaded_tracks_map: dict[str, str] = field(default_factory=dict)  # track_id/file_id -> local_path
+    downloaded_tracks_map: dict[str, str] = field(default_factory=dict)
+    # New download settings
+    save_tracks_enabled: bool = True
+    downloads_dir: str = ""  # empty means use default
 
 class SettingsService:
     """Manages secure encrypted user settings, cached chats, and persistent downloaded tracks registry."""
@@ -45,6 +48,18 @@ class SettingsService:
     @property
     def preferences(self) -> UserPreferences:
         return self._preferences
+
+    @property
+    def save_tracks_enabled(self) -> bool:
+        return self._preferences.save_tracks_enabled
+
+    @property
+    def effective_downloads_dir(self) -> Path:
+        """Return user-selected downloads directory if set and exists, else default."""
+        custom = self._preferences.downloads_dir
+        if custom and Path(custom).exists():
+            return Path(custom)
+        return self._config.downloads_dir
 
     def load(self) -> None:
         data = self._crypto.load_encrypted_json(self._settings_file)
@@ -72,6 +87,8 @@ class SettingsService:
                 cached_music_chats=data.get("cached_music_chats", []),
                 cached_user_profile=data.get("cached_user_profile", {}),
                 downloaded_tracks_map=data.get("downloaded_tracks_map", {}),
+                save_tracks_enabled=data.get("save_tracks_enabled", True),
+                downloads_dir=data.get("downloads_dir", ""),
             )
             logger.info("Loaded secure encrypted preferences successfully.")
         except Exception as exc:
@@ -88,6 +105,8 @@ class SettingsService:
             "cached_music_chats": self._preferences.cached_music_chats,
             "cached_user_profile": self._preferences.cached_user_profile,
             "downloaded_tracks_map": self._preferences.downloaded_tracks_map,
+            "save_tracks_enabled": self._preferences.save_tracks_enabled,
+            "downloads_dir": self._preferences.downloads_dir,
         }
         self._crypto.save_encrypted_json(self._settings_file, payload)
 
@@ -195,4 +214,17 @@ class SettingsService:
 
     def set_last_chat(self, chat_id: int) -> None:
         self._preferences.last_chat_id = chat_id
+        self.save()
+
+    def set_save_tracks_enabled(self, enabled: bool) -> None:
+        """Enable or disable saving of downloaded tracks to disk."""
+        self._preferences.save_tracks_enabled = enabled
+        self.save()
+
+    def set_downloads_dir(self, path: Path) -> None:
+        """Set custom downloads directory. Pass None to reset to default."""
+        if path is None:
+            self._preferences.downloads_dir = ""
+        else:
+            self._preferences.downloads_dir = str(path)
         self.save()
