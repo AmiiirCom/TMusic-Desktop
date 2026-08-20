@@ -1,77 +1,28 @@
 import base64
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 import logging
 from pathlib import Path
 from typing import Any
-import urllib.request
-from urllib.parse import urlparse
 
 from app.config import AppConfig
 from app.core.security import CryptoManager
 from app.models.chat import OwnedChat
 from app.models.user import TelegramUser
+from app.settings.detector import detect_system_proxy
+from app.settings.models import ProxySettings, UserPreferences
 
 logger = logging.getLogger("tmusic.settings.service")
 
-
-def detect_system_proxy() -> tuple[str, str, int, str, str] | None:
-    """
-    Detect system proxy configured on the operating system (Windows, macOS, Linux).
-    Returns: (proxy_type, server, port, username, password) or None
-    """
-    try:
-        proxies = urllib.request.getproxies()
-        if not proxies:
-            return None
-
-        # Prioritize SOCKS proxies, then HTTPS, then HTTP
-        for proto in ("socks5", "socks", "https", "http"):
-            if proto in proxies:
-                raw_url = proxies[proto]
-                if not raw_url:
-                    continue
-                if not raw_url.startswith(("http://", "https://", "socks://", "socks5://")):
-                    raw_url = f"{proto}://{raw_url}"
-
-                parsed = urlparse(raw_url)
-                p_type = "SOCKS5" if "sock" in proto else "HTTP"
-                host = parsed.hostname or "127.0.0.1"
-                port = parsed.port or (10808 if p_type == "SOCKS5" else 8080)
-                user = parsed.username or ""
-                pwd = parsed.password or ""
-                return (p_type, host, port, user, pwd)
-    except Exception as exc:
-        logger.debug("Failed to detect system proxy: %s", exc)
-    return None
-
-
-@dataclass(slots=True)
-class ProxySettings:
-    mode: str = "DIRECT"  # "DIRECT", "SYSTEM", "CUSTOM"
-    enabled: bool = False
-    proxy_type: str = "SOCKS5"
-    server: str = "127.0.0.1"
-    port: int = 10808
-    username: str = ""
-    password: str = ""
-
-
-@dataclass(slots=True)
-class UserPreferences:
-    volume: int = 80
-    is_muted: bool = False
-    playback_rate: float = 1.0
-    minimize_to_tray: bool = True
-    save_to_downloads: bool = True
-    last_chat_id: int = 0
-    proxy: ProxySettings = field(default_factory=ProxySettings)
-    cached_music_chats: list[dict[str, Any]] = field(default_factory=list)
-    cached_user_profile: dict[str, Any] = field(default_factory=dict)
-    downloaded_tracks_map: dict[str, str] = field(default_factory=dict)  # track_id/file_id -> local_path
+__all__ = [
+    "detect_system_proxy",
+    "ProxySettings",
+    "UserPreferences",
+    "SettingsService",
+]
 
 
 class SettingsService:
-    """Manages secure encrypted user settings, cached chats, and persistent downloaded tracks registry."""
+    """Manages encrypted user settings, cached chats, and persistent track registry."""
 
     def __init__(self, config: AppConfig, crypto: CryptoManager) -> None:
         self._config = config
@@ -91,10 +42,7 @@ class SettingsService:
 
         try:
             proxy_data = data.get("proxy", {})
-            mode = proxy_data.get("mode")
-            if not mode:
-                # Backward compatibility: determine mode from enabled flag
-                mode = "CUSTOM" if proxy_data.get("enabled", False) else "DIRECT"
+            mode = proxy_data.get("mode") or ("CUSTOM" if proxy_data.get("enabled", False) else "DIRECT")
 
             proxy = ProxySettings(
                 mode=mode,
@@ -138,13 +86,11 @@ class SettingsService:
         self._crypto.save_encrypted_json(self._settings_file, payload)
 
     def register_downloaded_track(self, track_id: str, file_id: int, local_path: str) -> None:
-        """Persist track path so it's permanently recognized across app restarts."""
         self._preferences.downloaded_tracks_map[track_id] = local_path
         self._preferences.downloaded_tracks_map[str(file_id)] = local_path
         self.save()
 
     def get_downloaded_track_path(self, track_id: str, file_id: int) -> str | None:
-        """Retrieve verified path from persistent registry."""
         path_str = (
             self._preferences.downloaded_tracks_map.get(track_id)
             or self._preferences.downloaded_tracks_map.get(str(file_id))
@@ -225,23 +171,7 @@ class SettingsService:
         )
 
     def set_proxy_settings(self, proxy: ProxySettings) -> None:
-        """Update and persist complete proxy configuration."""
         self._preferences.proxy = proxy
-        self.save()
-
-    def set_proxy(
-        self,
-        proxy_type: str,
-        server: str,
-        port: int,
-        mode: str = "CUSTOM",
-        enabled: bool = True,
-    ) -> None:
-        self._preferences.proxy.mode = mode
-        self._preferences.proxy.enabled = enabled
-        self._preferences.proxy.proxy_type = proxy_type
-        self._preferences.proxy.server = server
-        self._preferences.proxy.port = port
         self.save()
 
     def set_volume(self, volume: int) -> None:
@@ -253,7 +183,6 @@ class SettingsService:
         self.save()
 
     def set_save_to_downloads(self, enabled: bool) -> None:
-        """Enable or disable persistent export of downloaded tracks to TMusicDownloads."""
         self._preferences.save_to_downloads = enabled
         self.save()
 

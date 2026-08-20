@@ -1,44 +1,29 @@
 import base64
-from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from app.config import AppConfig
-from app.core.keywords import is_music_title
 from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
-from app.settings.service import ProxySettings, SettingsService, detect_system_proxy
+from app.settings.service import ProxySettings, SettingsService
 from app.telegram.adapter import TDLibAdapter
 from app.telegram.auth_handler import AuthHandler
 from app.telegram.chat_handler import ChatHandler
+from app.telegram.connection_manager import ConnectionManager
 from app.telegram.enums import AuthState
 from app.telegram.media_handler import MediaHandler
 from app.telegram.track_handler import TrackHandler
+from app.telegram.user_handler import UserHandler
 from app.telegram.worker import TDLibWorker
 
 logger = logging.getLogger("tmusic.telegram.service")
 
-# Network health check and reconnect interval constants (seconds)
-CONNECTED_HEALTH_CHECK_INTERVAL_SEC = 90
-INITIAL_RETRY_INTERVAL_SEC = 15
-RETRY_INTERVAL_STEP_SEC = 15
-MAX_RETRY_INTERVAL_SEC = 120
-
-
-@dataclass(slots=True)
-class ChatTrackPaginationState:
-    chat_id: int
-    tracks: list[Track] = field(default_factory=list)
-    next_from_message_id: int = 0
-    is_loading: bool = False
-    has_more: bool = True
-
 
 class TelegramService(QObject):
-    """Event-Driven Telegram service with 90s active health checks and incremental reconnect backoff."""
+    """High-level Telegram service orchestrating authentication, user profile, chats, tracks, and media."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
@@ -54,7 +39,7 @@ class TelegramService(QObject):
     tracks_prepended = Signal(object, list)
     tracks_deleted = Signal(object, list)
     cover_downloaded = Signal(str, str)
-    track_reaction_updated = Signal(object, object, bool, int)  # chat_id, message_id, is_liked, count
+    track_reaction_updated = Signal(object, object, bool, int)
 
     file_download_progress = Signal(int, int, int)
     file_download_completed = Signal(int, str)
@@ -76,22 +61,13 @@ class TelegramService(QObject):
         self._settings = settings_service
         self._cache = cache_manager
         self._worker: TDLibWorker | None = None
+        self._current_opened_chat_id = 0
 
-        self._my_user_id: int = 0
-        self._current_user: TelegramUser | None = None
-        self._avatar_file_id: int = 0
-        self._current_opened_chat_id: int = 0
-
-        # Periodic health check while connected (every 90s)
-        self._health_check_timer = QTimer(self)
-        self._health_check_timer.setInterval(CONNECTED_HEALTH_CHECK_INTERVAL_SEC * 1000)
-        self._health_check_timer.timeout.connect(self._on_health_check_timeout)
-
-        # Incremental reconnect timer when disconnected (15s -> 30s -> ... -> 120s)
-        self._current_retry_interval: int = INITIAL_RETRY_INTERVAL_SEC
-        self._reconnect_timer = QTimer(self)
-        self._reconnect_timer.setSingleShot(True)
-        self._reconnect_timer.timeout.connect(self._on_reconnect_timer_timeout)
+        self._connection = ConnectionManager(
+            adapter=self._adapter,
+            get_proxy_settings=lambda: self._settings.preferences.proxy if self._settings else None,
+        )
+        self._connection.retry_interval_changed.connect(self.connection_retry_interval_changed.emit)
 
         self._auth = AuthHandler(
             config=self._config,
@@ -99,6 +75,13 @@ class TelegramService(QObject):
             on_auth_state_changed=self._on_auth_state_changed,
             on_auth_ready=self._on_auth_ready,
             on_auth_closed=self._on_auth_closed,
+        )
+
+        self._user_handler = UserHandler(
+            config=self._config,
+            adapter=self._adapter,
+            settings_service=self._settings,
+            on_user_loaded=self.user_loaded.emit,
         )
 
         self._media = MediaHandler(
@@ -114,7 +97,7 @@ class TelegramService(QObject):
             adapter=self._adapter,
             settings_service=self._settings,
             on_owned_chats_updated=self.owned_chats_loaded.emit,
-            on_search_results=self._on_chat_search_results,
+            on_search_results=self.chat_search_results_received.emit,
         )
 
         self._tracks = TrackHandler(
@@ -135,15 +118,11 @@ class TelegramService(QObject):
 
     @property
     def current_user(self) -> TelegramUser | None:
-        return self._current_user
+        return self._user_handler.current_user
 
     @property
     def current_auth_state(self) -> AuthState:
         return self._auth.current_state
-
-    def set_settings_service(self, settings_service: SettingsService) -> None:
-        self._settings = settings_service
-        self._chats.set_settings_service(settings_service)
 
     def set_online_status(self, is_online: bool) -> None:
         if self._adapter.is_loaded:
@@ -157,18 +136,12 @@ class TelegramService(QObject):
         if is_active:
             if not self._net_timer.isActive():
                 self._net_timer.start()
-        else:
-            if not self._media.has_active_downloads:
-                self._net_timer.stop()
+        elif not self._media.has_active_downloads:
+            self._net_timer.stop()
 
     def load_cached_state(self) -> None:
         self._chats.load_cached_chats()
-        if self._settings:
-            cached_user = self._settings.get_cached_user_profile()
-            if cached_user:
-                self._current_user = cached_user
-                self._my_user_id = cached_user.id
-                self.user_loaded.emit(cached_user)
+        self._user_handler.load_cached_user()
 
     def get_downloaded_path(self, file_id: int) -> str | None:
         return self._media.get_downloaded_path(file_id)
@@ -196,17 +169,15 @@ class TelegramService(QObject):
 
     def start(self) -> None:
         if not self._adapter.is_loaded:
-            logger.error("Cannot start TelegramService: TDLib is not loaded")
             self.auth_error.emit("TDLib binary is missing or failed to load.")
             return
 
         self._worker = TDLibWorker(self._adapter)
         self._worker.update_received.connect(self._handle_update)
         self._worker.start()
-        logger.info("TelegramService started")
+        logger.info("TelegramService worker started")
 
     def _open_chat(self, chat_id: int) -> None:
-        """Open chat in TDLib to enable full reactions and interaction info synchronization."""
         if self._current_opened_chat_id == chat_id:
             return
         if self._current_opened_chat_id != 0 and self._adapter.is_loaded:
@@ -229,229 +200,118 @@ class TelegramService(QObject):
                 "@extra": "periodic_net_stats",
             })
 
-    def _handle_connection_state_change(self, state: str) -> None:
-        if state == "connectionStateReady":
-            logger.info("TDLib connection is READY. Starting 90s active health checks.")
-            self._current_retry_interval = INITIAL_RETRY_INTERVAL_SEC
-            self._reconnect_timer.stop()
-            self.connection_retry_interval_changed.emit(0)
-
-            # Start periodic 90s health check while connected
-            if not self._health_check_timer.isActive():
-                self._health_check_timer.start()
-        else:
-            # Stop connected health check and start/continue incremental reconnect loop
-            self._health_check_timer.stop()
-            if not self._reconnect_timer.isActive():
-                logger.debug(
-                    "Connection state '%s'. Scheduling reconnect check in %d seconds.",
-                    state,
-                    self._current_retry_interval,
-                )
-                self._reconnect_timer.start(self._current_retry_interval * 1000)
-                self.connection_retry_interval_changed.emit(self._current_retry_interval)
-
-    def _on_health_check_timeout(self) -> None:
-        """Perform active 90-second socket and reachability health ping while connected."""
-        if not self._adapter.is_loaded:
-            return
-
-        logger.debug("Executing periodic 90s connection health verification...")
-        self.set_online_status(True)
-        self._adapter.send({"@type": "getOption", "name": "version", "@extra": "health_ping"})
-
-    def _on_reconnect_timer_timeout(self) -> None:
-        if not self._adapter.is_loaded:
-            return
-
-        logger.info("Executing incremental reconnect check (interval: %ds)...", self._current_retry_interval)
-
-        # Nudge TDLib by asserting online status and reapplying proxy settings
-        self.set_online_status(True)
-        if self._settings:
-            self.apply_proxy_settings(self._settings.preferences.proxy)
-
-        # Increase interval for next retry (15 -> 30 -> 45 ... -> 120s max)
-        next_interval = min(MAX_RETRY_INTERVAL_SEC, self._current_retry_interval + RETRY_INTERVAL_STEP_SEC)
-        self._current_retry_interval = next_interval
-        self.connection_retry_interval_changed.emit(self._current_retry_interval)
-        self._reconnect_timer.start(self._current_retry_interval * 1000)
-
     def _handle_update(self, update: dict[str, Any]) -> None:
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
 
-        # Reaction response error fallback
         if isinstance(extra, str) and extra.startswith("react_") and update_type == "error":
             parts = extra.split("_")
             if len(parts) >= 4:
                 try:
-                    err_chat_id = int(parts[1])
-                    err_msg_id = int(parts[2])
-                    attempted_liked = bool(int(parts[3]))
-                    logger.debug("Reaction request rejected by Telegram for message %d: %s", err_msg_id, update.get("message"))
-                    self._tracks.revert_track_reaction(err_chat_id, err_msg_id, not attempted_liked)
+                    err_chat_id, err_msg_id, attempted = int(parts[1]), int(parts[2]), bool(int(parts[3]))
+                    self._tracks.revert_track_reaction(err_chat_id, err_msg_id, not attempted)
                 except Exception:
                     pass
             return
 
-        # Network Stats
         if extra == "periodic_net_stats" and update_type == "networkStatistics":
             total_rx = sum(e.get("received_bytes", 0) for e in update.get("entries", []))
             total_tx = sum(e.get("sent_bytes", 0) for e in update.get("entries", []))
             self.network_traffic_received.emit(total_rx, total_tx)
             return
 
-        # Normal track loading (pagination)
         if isinstance(extra, str) and extra.startswith("load_tracks_"):
             parts = extra.split("_")
             chat_id = int(parts[2])
             is_initial = parts[3] == "initial"
             if update_type in ("foundChatMessages", "messages"):
-                messages = update.get("messages", [])
-                next_from_id = update.get("next_from_message_id", 0)
-                self._tracks.process_search_response(chat_id, messages, next_from_id, is_initial)
+                self._tracks.process_search_response(
+                    chat_id, update.get("messages", []), update.get("next_from_message_id", 0), is_initial
+                )
             elif update_type == "error" and is_initial:
                 self.tracks_loaded.emit(chat_id, [], False)
             return
 
-        # Full track search pages
         if isinstance(extra, str) and extra.startswith("search_tracks_"):
             if update_type in ("foundChatMessages", "messages"):
                 parts = extra.split("_")
                 if len(parts) >= 3:
                     try:
-                        chat_id = int(parts[2])
-                    except ValueError:
-                        logger.warning("Invalid chat_id in extra: %s", extra)
-                        return
-
-                    messages = update.get("messages", [])
-                    next_from_id = update.get("next_from_message_id", 0)
-                    self._tracks.process_search_page(chat_id, messages, next_from_id, 100, extra)
-
-            elif update_type == "error":
-                parts = extra.split("_")
-                if len(parts) >= 3:
-                    try:
-                        chat_id = int(parts[2])
-                        logger.debug("Search error for chat %d: %s", chat_id, update.get("message", ""))
-                        if chat_id in self._tracks._search_states:
-                            del self._tracks._search_states[chat_id]
+                        cid = int(parts[2])
+                        self._tracks.process_search_page(
+                            cid, update.get("messages", []), update.get("next_from_message_id", 0), 100, extra
+                        )
                     except ValueError:
                         pass
             return
 
-        # Chat search
         if isinstance(extra, str) and extra.startswith("search_chats_"):
             if update_type == "chats":
-                chat_ids = update.get("chat_ids", [])
-                self._chats.process_search_results(chat_ids, extra)
-            elif update_type == "error":
-                logger.debug("Chat search error: %s", update.get("message", ""))
+                self._chats.process_search_results(update.get("chat_ids", []), extra)
             return
 
-        # Chat details from search
         if isinstance(extra, str) and extra.startswith("search_chat_details_"):
             if update_type == "chat":
                 parts = extra.split("_")
                 if len(parts) >= 5:
                     search_id = "_".join(parts[3:-1])
                     try:
-                        chat_id = int(parts[-1])
+                        cid = int(parts[-1])
+                        self._chats.process_chat_details_from_search(search_id, cid, update)
                     except ValueError:
-                        return
-                    self._chats.process_chat_details_from_search(search_id, chat_id, update)
+                        pass
             return
 
-        # Chat pagination
         if extra in ("load_main_chats", "load_archive_chats"):
             self._chats.handle_pagination_response(extra, update_type)
             return
 
-        # Supergroup ownership queries
         if isinstance(extra, str) and extra.startswith("check_supergroup_") and update_type == "supergroup":
             self._chats.process_supergroup_update(update)
             return
 
-        # Real-time event stream
         match update_type:
             case "updateAuthorizationState":
                 self._auth.process_update(update.get("authorization_state", {}))
 
             case "updateConnectionState":
                 state = update.get("state", {}).get("@type", "")
-                self._handle_connection_state_change(state)
+                self._connection.handle_connection_state(state)
                 self.connection_state_changed.emit(state)
 
             case "updateNewMessage":
                 self._tracks.process_new_message(update.get("message", {}))
 
             case "updateDeleteMessages":
-                is_permanent = update.get("is_permanent", True)
-                from_cache = update.get("from_cache", False)
-                if is_permanent and not from_cache:
-                    chat_id = update.get("chat_id", 0)
-                    message_ids = update.get("message_ids", [])
-                    self._tracks.process_delete_messages(chat_id, message_ids)
+                if update.get("is_permanent", True) and not update.get("from_cache", False):
+                    self._tracks.process_delete_messages(update.get("chat_id", 0), update.get("message_ids", []))
 
             case "updateMessageInteractionInfo":
-                chat_id = update.get("chat_id", 0)
-                msg_id = update.get("message_id", 0)
-                interaction_info = update.get("interaction_info")
-                self._tracks.process_interaction_info_update(chat_id, msg_id, interaction_info)
+                self._tracks.process_interaction_info_update(
+                    update.get("chat_id", 0), update.get("message_id", 0), update.get("interaction_info")
+                )
 
             case "updateMessageReactions":
-                chat_id = update.get("chat_id", 0)
-                msg_id = update.get("message_id", 0)
-                reactions_obj = update.get("reactions")
-                self._tracks.process_reactions_update(chat_id, msg_id, reactions_obj)
+                self._tracks.process_reactions_update(
+                    update.get("chat_id", 0), update.get("message_id", 0), update.get("reactions")
+                )
 
             case "updateFile":
                 file_obj = update.get("file", {})
-                file_id = file_obj.get("id", 0)
+                fid = file_obj.get("id", 0)
                 local = file_obj.get("local", {})
                 if local.get("is_downloading_completed") and local.get("path"):
-                    if file_id == self._avatar_file_id and self._current_user:
-                        original_path = Path(local.get("path"))
-                        if original_path.exists():
-                            from app.core.image_compressor import compress_image, get_compressed_image_path
-                            compressed_path = get_compressed_image_path(
-                                self._config.thumb_cache_dir,
-                                "avatar",
-                                str(self._current_user.id),
-                            )
-                            result = compress_image(original_path, compressed_path)
-                            if result:
-                                self._current_user = TelegramUser(
-                                    id=self._current_user.id,
-                                    first_name=self._current_user.first_name,
-                                    last_name=self._current_user.last_name,
-                                    username=self._current_user.username,
-                                    phone_number=self._current_user.phone_number,
-                                    photo_id=self._current_user.photo_id,
-                                    photo_file_id=self._avatar_file_id,
-                                    photo_path=str(result),
-                                    minithumb_data=self._current_user.minithumb_data,
-                                )
-                                if self._settings:
-                                    self._settings.set_cached_user_profile(self._current_user)
-                                self.user_loaded.emit(self._current_user)
-                                try:
-                                    original_path.unlink(missing_ok=True)
-                                except Exception:
-                                    pass
-
+                    if fid == self._user_handler.avatar_file_id:
+                        self._user_handler.handle_avatar_file(Path(local.get("path")))
                     self._media.process_file_update(file_obj)
 
             case "user":
-                self._extract_user(update, is_self=True)
+                self._user_handler.extract_user(update, is_self=True)
 
             case "updateUser":
                 user_obj = update.get("user", {})
-                user_id = user_obj.get("id", 0)
-                if self._my_user_id == 0 or user_id == self._my_user_id:
-                    self._extract_user(user_obj, is_self=True)
+                if self._user_handler.my_user_id == 0 or user_obj.get("id", 0) == self._user_handler.my_user_id:
+                    self._user_handler.extract_user(user_obj, is_self=True)
 
             case "chats":
                 for cid in update.get("chat_ids", []):
@@ -469,17 +329,6 @@ class TelegramService(QObject):
             case "updateChatTitle":
                 self._chats.process_chat_title_update(update.get("chat_id", 0), update.get("title", ""))
 
-            case "error":
-                code = update.get("code")
-                msg = update.get("message", "")
-                transient_msgs = (
-                    "There is not enough downloaded bytes",
-                    "Failed to read the file",
-                    "The reaction isn't available",
-                )
-                if code != 404 and not any(t in msg for t in transient_msgs):
-                    logger.warning("TDLib Error: %s (code: %s)", msg, code)
-
     def _on_auth_state_changed(self, state: AuthState) -> None:
         self.auth_state_changed.emit(state.value)
 
@@ -488,96 +337,13 @@ class TelegramService(QObject):
         self._chats.start_chat_sync()
 
     def _on_auth_closed(self) -> None:
-        logger.info("TDLib authorization closed (session terminated remotely).")
         self._net_timer.stop()
-        self._health_check_timer.stop()
-        self._reconnect_timer.stop()
+        self._connection.stop()
         if self._worker:
             self._worker.stop()
             self._worker = None
-
-        try:
-            self._adapter.close()
-        except Exception as exc:
-            logger.debug("Error closing adapter: %s", exc)
-
+        self._adapter.close()
         self.auth_state_changed.emit(AuthState.CLOSED.value)
-
-    def _extract_user(self, user_obj: dict[str, Any], is_self: bool = False) -> None:
-        user_id = user_obj.get("id", 0)
-        if not user_id:
-            return
-
-        if not is_self and self._my_user_id != 0 and user_id != self._my_user_id:
-            return
-
-        self._my_user_id = user_id
-
-        usernames = user_obj.get("usernames", {})
-        active_usernames = usernames.get("active_usernames", [])
-        username = active_usernames[0] if active_usernames else user_obj.get("username", "")
-
-        photo = user_obj.get("profile_photo", {})
-        photo_id = photo.get("id", 0)
-
-        big_file = photo.get("big", {}) if photo else {}
-        small_file = photo.get("small", {}) if photo else {}
-        target_photo_file = big_file if big_file.get("id") else small_file
-
-        photo_file_id = target_photo_file.get("id", 0)
-        photo_local = target_photo_file.get("local", {}) if target_photo_file else {}
-        photo_path = photo_local.get("path") if photo_local.get("is_downloading_completed") else None
-
-        minithumb = photo.get("minithumbnail") if photo else None
-        minithumb_data = None
-        if minithumb and "data" in minithumb:
-            try:
-                minithumb_data = base64.b64decode(minithumb["data"])
-            except Exception:
-                minithumb_data = None
-
-        cached_user = self._settings.get_cached_user_profile() if self._settings else None
-        is_same_photo = (
-            cached_user
-            and str(cached_user.photo_id) == str(photo_id)
-            and cached_user.photo_path
-            and Path(cached_user.photo_path).exists()
-        )
-
-        if is_same_photo and cached_user:
-            photo_path = cached_user.photo_path
-        elif photo_file_id > 0 and not photo_path:
-            self._avatar_file_id = photo_file_id
-            self._adapter.send({
-                "@type": "downloadFile",
-                "file_id": photo_file_id,
-                "priority": 16,
-                "offset": 0,
-                "limit": 0,
-                "synchronous": False,
-            })
-
-        user = TelegramUser(
-            id=user_id,
-            first_name=user_obj.get("first_name", ""),
-            last_name=user_obj.get("last_name", ""),
-            username=username,
-            phone_number=user_obj.get("phone_number", ""),
-            photo_id=photo_id,
-            photo_file_id=photo_file_id,
-            photo_path=photo_path,
-            minithumb_data=minithumb_data,
-        )
-
-        self._current_user = user
-        if self._settings:
-            self._settings.set_cached_user_profile(user)
-
-        self.user_loaded.emit(user)
-
-    # ------------------------------------------------------------------
-    # Public Commands & Proxy Dispatching
-    # ------------------------------------------------------------------
 
     def send_phone_number(self, phone_number: str) -> None:
         self._auth.send_phone_number(phone_number)
@@ -600,14 +366,10 @@ class TelegramService(QObject):
         self._media.download_cover_file(track_id, file_id)
 
     def toggle_track_like(self, track: Track) -> None:
-        """Optimistically toggle track like reaction and sync with Telegram."""
         next_liked = not track.is_liked
         next_count = max(0, track.heart_count + (1 if next_liked else -1))
-        # Ensure chat is marked open in TDLib
         self._open_chat(track.chat_id)
-        # Emit optimistic UI signal
         self.track_reaction_updated.emit(track.chat_id, track.message_id, next_liked, next_count)
-        # Dispatch to TDLib
         self._tracks.toggle_track_like(track.chat_id, track.message_id, track.is_liked)
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
@@ -621,89 +383,26 @@ class TelegramService(QObject):
     @Slot(str, str)
     def search_tracks(self, chat_id_str: str, query: str) -> None:
         try:
-            chat_id = int(chat_id_str)
+            cid = int(chat_id_str)
+            self._tracks.search_tracks(cid, query)
         except ValueError:
-            logger.error("Invalid chat_id: %s", chat_id_str)
-            return
-        logger.debug("Search requested for chat %d, query='%s'", chat_id, query)
-        self._tracks.search_tracks(chat_id, query)
+            pass
 
     @Slot(str)
     def search_chats(self, query: str) -> None:
-        """Search for chats by name."""
         self._chats.search_chats(query)
 
-    def _on_chat_search_results(self, chats: list[OwnedChat]) -> None:
-        """Handle chat search results and emit signal."""
-        self.chat_search_results_received.emit(chats)
-
     def apply_proxy_settings(self, proxy: ProxySettings) -> None:
-        """Apply Direct, System, or Custom proxy configuration to TDLib."""
-        if proxy.mode == "DIRECT" or not proxy.enabled:
-            self.disable_proxy()
-        elif proxy.mode == "SYSTEM":
-            sys_proxy = detect_system_proxy()
-            if sys_proxy:
-                ptype, server, port, user, pwd = sys_proxy
-                logger.info("Applying detected System Proxy: %s (%s:%d)", ptype, server, port)
-                if ptype == "SOCKS5":
-                    self.set_socks5_proxy(server, port, user, pwd)
-                else:
-                    self.set_http_proxy(server, port, user, pwd)
-            else:
-                logger.info("No active system proxy detected. Falling back to direct connection.")
-                self.disable_proxy()
-        elif proxy.mode == "CUSTOM":
-            logger.info("Applying Custom Proxy: %s (%s:%d)", proxy.proxy_type, proxy.server, proxy.port)
-            if proxy.proxy_type == "SOCKS5":
-                self.set_socks5_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
-            else:
-                self.set_http_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
-
-    def disable_proxy(self) -> None:
-        """Disable TDLib proxy and use direct connection."""
-        logger.info("Disabling Telegram proxy (Direct connection)")
-        if self._adapter.is_loaded:
-            self._adapter.send({"@type": "disableProxy"})
-
-    def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
-        logger.info("Setting SOCKS5 proxy: %s:%d", server, port)
-        self._adapter.send({
-            "@type": "addProxy",
-            "proxy": {
-                "@type": "proxy",
-                "server": server.strip(),
-                "port": int(port),
-                "last_used_date": 0,
-                "type": {"@type": "proxyTypeSocks5", "username": username, "password": password},
-            },
-            "enable": True,
-        })
-
-    def set_http_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
-        logger.info("Setting HTTP proxy: %s:%d", server, port)
-        self._adapter.send({
-            "@type": "addProxy",
-            "proxy": {
-                "@type": "proxy",
-                "server": server.strip(),
-                "port": int(port),
-                "last_used_date": 0,
-                "type": {"@type": "proxyTypeHttp", "username": username, "password": password},
-            },
-            "enable": True,
-        })
+        self._connection.apply_proxy_settings(proxy)
 
     def log_out(self) -> None:
         self._net_timer.stop()
-        self._health_check_timer.stop()
-        self._reconnect_timer.stop()
+        self._connection.stop()
         self._adapter.send({"@type": "logOut"})
 
     def stop(self) -> None:
         self._net_timer.stop()
-        self._health_check_timer.stop()
-        self._reconnect_timer.stop()
+        self._connection.stop()
         if self._worker:
             self._worker.stop()
             self._worker = None

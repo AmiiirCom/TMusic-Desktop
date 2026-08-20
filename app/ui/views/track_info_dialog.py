@@ -10,12 +10,12 @@ from PySide6.QtWidgets import (
 
 from app.core.metadata import AudioMetadata
 from app.models.track import Track
-from app.ui.components.player_bar import create_playerbar_cover_pixmap
+from app.ui.utils.pixmaps import create_rounded_cover_pixmap
 from app.ui.views.base_modal import BaseModalDialog
 
 
 class TrackInfoDialog(BaseModalDialog):
-    """Frameless unified modal displaying authentic audio file metadata."""
+    """Frameless modal dialog displaying detailed track tags and ID3 metadata."""
 
     def __init__(self, track: Track, metadata: AudioMetadata | None, parent: QWidget | None = None) -> None:
         super().__init__(title="مشخصات و متادیتای آهنگ", parent=parent)
@@ -23,13 +23,12 @@ class TrackInfoDialog(BaseModalDialog):
         self._init_body(track, metadata or AudioMetadata())
 
     def _init_body(self, track: Track, meta: AudioMetadata) -> None:
-        # Top: Artwork + Title
         top_layout = QHBoxLayout()
         top_layout.setSpacing(16)
 
         cover_lbl = QLabel()
         cover_lbl.setFixedSize(64, 64)
-        cover_lbl.setPixmap(create_playerbar_cover_pixmap(track.minithumbnail_data, track.cover_path, size=64))
+        cover_lbl.setPixmap(create_rounded_cover_pixmap(track.minithumbnail_data, track.cover_path, size=64))
 
         title_box = QVBoxLayout()
         title_box.setSpacing(3)
@@ -45,13 +44,11 @@ class TrackInfoDialog(BaseModalDialog):
         top_layout.addStretch()
         self.body_layout.addLayout(top_layout)
 
-        # Separator line
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet("color: #242f3d; margin: 4px 0;")
         self.body_layout.addWidget(sep)
 
-        # Metadata Form
         form = QFormLayout()
         form.setSpacing(9)
 

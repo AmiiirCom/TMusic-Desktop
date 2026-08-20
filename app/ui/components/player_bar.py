@@ -1,6 +1,5 @@
-from pathlib import Path
 from PySide6.QtCore import QEvent, QPoint, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -15,71 +14,12 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.core.metadata import AudioMetadata
 from app.models.track import Track
-
-SPEED_OPTIONS = (0.75, 1.0, 1.25, 1.5, 1.75)
-
-
-def create_playerbar_cover_pixmap(
-    minithumb_data: bytes | None = None,
-    cover_path: str | None = None,
-    size: int = 48,
-) -> QPixmap:
-    """Generate crystal-clear Hi-DPI cover artwork for the bottom player bar."""
-    scale = 2
-    render_size = size * scale
-    target = QPixmap(render_size, render_size)
-    target.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(target)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-    path = QPainterPath()
-    path.addRoundedRect(0, 0, render_size, render_size, 8 * scale, 8 * scale)
-    painter.setClipPath(path)
-
-    has_drawn = False
-
-    if cover_path and Path(cover_path).exists():
-        src = QPixmap(str(cover_path))
-        if not src.isNull():
-            scaled = src.scaled(
-                render_size,
-                render_size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            x = (scaled.width() - render_size) // 2
-            y = (scaled.height() - render_size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
-            has_drawn = True
-
-    if not has_drawn and minithumb_data:
-        src = QPixmap()
-        if src.loadFromData(minithumb_data):
-            scaled = src.scaled(
-                render_size,
-                render_size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            x = (scaled.width() - render_size) // 2
-            y = (scaled.height() - render_size) // 2
-            painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
-            has_drawn = True
-
-    if not has_drawn:
-        painter.fillRect(0, 0, render_size, render_size, QColor("#2b5278"))
-        painter.setPen(QColor("#ffffff"))
-        painter.drawText(target.rect(), Qt.AlignmentFlag.AlignCenter, "🎵")
-
-    painter.end()
-    target.setDevicePixelRatio(scale)
-    return target
+from app.ui.components.player_controls import SPEED_OPTIONS, PlayerControls
+from app.ui.utils.pixmaps import create_rounded_cover_pixmap
 
 
 class PlayerBar(QFrame):
-    """Telegram Desktop styled bottom audio player bar with full reset support and like reaction."""
+    """Bottom audio player bar with track info, playback controls, and sound adjustments."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
@@ -89,7 +29,7 @@ class PlayerBar(QFrame):
     speed_changed = Signal(float)
     lyrics_clicked = Signal()
     track_info_clicked = Signal()
-    track_label_clicked = Signal()  # Emitted when user clicks on cover or title
+    track_label_clicked = Signal()
     like_clicked = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
@@ -99,8 +39,6 @@ class PlayerBar(QFrame):
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._current_track: Track | None = None
         self._cover_path: str | None = None
-        self._is_slider_dragging = False
-        self._duration_ms = 0
         self._current_speed = 1.0
         self._init_ui()
 
@@ -122,9 +60,7 @@ class PlayerBar(QFrame):
                 padding: 4px;
                 border-radius: 18px;
             }
-            QPushButton:hover {
-                background-color: #242f3d;
-            }
+            QPushButton:hover { background-color: #242f3d; }
             QPushButton#btnPlayPause {
                 background-color: #2481cc;
                 font-size: 18px;
@@ -133,9 +69,7 @@ class PlayerBar(QFrame):
                 min-height: 38px;
                 border-radius: 19px;
             }
-            QPushButton#btnPlayPause:hover {
-                background-color: #1d72b8;
-            }
+            QPushButton#btnPlayPause:hover { background-color: #1d72b8; }
             QPushButton#btnPlayerLike {
                 background: transparent;
                 border: none;
@@ -144,9 +78,7 @@ class PlayerBar(QFrame):
                 min-width: 32px;
                 min-height: 32px;
             }
-            QPushButton#btnPlayerLike:hover {
-                background-color: #242f3d;
-            }
+            QPushButton#btnPlayerLike:hover { background-color: #242f3d; }
             QPushButton#btnSpeed {
                 background-color: #242f3d;
                 color: #6ab3f3;
@@ -180,9 +112,7 @@ class PlayerBar(QFrame):
                 padding: 4px;
                 color: #7f91a4;
             }
-            QPushButton#btnInfo:hover {
-                color: #ffffff;
-            }
+            QPushButton#btnInfo:hover { color: #ffffff; }
             QSlider::groove:horizontal {
                 height: 4px;
                 background: #242f3d;
@@ -205,18 +135,16 @@ class PlayerBar(QFrame):
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(16)
 
-        # Left section: artwork, track info, and like button (clickable)
-        info_container = QWidget(self)
-        self.info_container = info_container
+        self.info_container = QWidget(self)
         self.info_container.installEventFilter(self)
-        info_container.setFixedWidth(280)
-        info_layout = QHBoxLayout(info_container)
+        self.info_container.setFixedWidth(280)
+        info_layout = QHBoxLayout(self.info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(10)
 
         self.artwork_badge = QLabel()
         self.artwork_badge.setFixedSize(48, 48)
-        self.artwork_badge.setPixmap(create_playerbar_cover_pixmap(size=48))
+        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(size=48))
 
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
@@ -224,7 +152,6 @@ class PlayerBar(QFrame):
 
         self.title_label = QLabel("آهنگی در حال پخش نیست")
         self.title_label.setStyleSheet("font-size: 13px; font-weight: bold;")
-
         self.artist_label = QLabel(f"{self._config.app_name} Desktop")
         self.artist_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
 
@@ -241,61 +168,15 @@ class PlayerBar(QFrame):
         info_layout.addWidget(self.artwork_badge)
         info_layout.addLayout(meta_layout, stretch=1)
         info_layout.addWidget(self.btn_like)
-        layout.addWidget(info_container)
+        layout.addWidget(self.info_container)
 
-        # Middle section: controls + timeline
-        center_container = QWidget(self)
-        center_layout = QVBoxLayout(center_container)
-        center_layout.setContentsMargins(0, 0, 0, 0)
-        center_layout.setSpacing(4)
-        center_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.controls = PlayerControls(self)
+        self.controls.play_pause_clicked.connect(self.play_pause_clicked.emit)
+        self.controls.next_clicked.connect(self.next_clicked.emit)
+        self.controls.previous_clicked.connect(self.previous_clicked.emit)
+        self.controls.seek_requested.connect(self.seek_requested.emit)
+        layout.addWidget(self.controls, stretch=1)
 
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(12)
-        controls_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.btn_prev = QPushButton("⏮")
-        self.btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_prev.clicked.connect(self.previous_clicked.emit)
-
-        self.btn_play_pause = QPushButton("▶")
-        self.btn_play_pause.setObjectName("btnPlayPause")
-        self.btn_play_pause.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_play_pause.clicked.connect(self.play_pause_clicked.emit)
-
-        self.btn_next = QPushButton("⏭")
-        self.btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_next.clicked.connect(self.next_clicked.emit)
-
-        controls_layout.addWidget(self.btn_prev)
-        controls_layout.addWidget(self.btn_play_pause)
-        controls_layout.addWidget(self.btn_next)
-        center_layout.addLayout(controls_layout)
-
-        timeline_layout = QHBoxLayout()
-        timeline_layout.setSpacing(8)
-
-        self.pos_label = QLabel("00:00")
-        self.pos_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
-        self.pos_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 1000)
-        self.slider.sliderPressed.connect(self._on_slider_pressed)
-        self.slider.sliderReleased.connect(self._on_slider_released)
-
-        self.dur_label = QLabel("00:00")
-        self.dur_label.setStyleSheet("font-size: 11px; color: #7f91a4;")
-        self.dur_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-
-        timeline_layout.addWidget(self.pos_label)
-        timeline_layout.addWidget(self.slider)
-        timeline_layout.addWidget(self.dur_label)
-        center_layout.addLayout(timeline_layout)
-
-        layout.addWidget(center_container, stretch=1)
-
-        # Right section: extras (lyrics, info, speed, volume)
         right_container = QWidget(self)
         right_container.setFixedWidth(280)
         right_layout = QHBoxLayout(right_container)
@@ -303,27 +184,22 @@ class PlayerBar(QFrame):
 
         self.btn_lyrics = QPushButton("📝")
         self.btn_lyrics.setObjectName("btnLyrics")
-        self.btn_lyrics.setToolTip("متن آهنگ (Lyrics)")
         self.btn_lyrics.setEnabled(False)
         self.btn_lyrics.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lyrics.clicked.connect(self.lyrics_clicked.emit)
 
         self.btn_info = QPushButton("ℹ️")
         self.btn_info.setObjectName("btnInfo")
-        self.btn_info.setToolTip("مشخصات و متادیتا")
         self.btn_info.setEnabled(False)
         self.btn_info.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_info.clicked.connect(self.track_info_clicked.emit)
 
         self.btn_speed = QPushButton("1.0x")
         self.btn_speed.setObjectName("btnSpeed")
-        self.btn_speed.setToolTip("سرعت پخش")
         self.btn_speed.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_speed.clicked.connect(self._open_speed_menu)
 
         vol_icon = QLabel("🔊")
-        vol_icon.setStyleSheet("font-size: 14px;")
-
         self.vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(80)
@@ -337,11 +213,8 @@ class PlayerBar(QFrame):
         layout.addWidget(right_container)
 
     def eventFilter(self, obj, event):
-        """Capture mouse click on track info area (cover + title) to emit signal."""
         if obj == self.info_container and event.type() == QEvent.Type.MouseButtonPress:
-            click_pos = event.position().toPoint()
-            # Do not trigger scroll if clicking directly on like button
-            if not self.btn_like.geometry().contains(click_pos):
+            if not self.btn_like.geometry().contains(event.position().toPoint()):
                 self.track_label_clicked.emit()
                 return True
         return super().eventFilter(obj, event)
@@ -361,9 +234,7 @@ class PlayerBar(QFrame):
                 border-radius: 4px;
                 font-size: 13px;
             }
-            QMenu::item:selected {
-                background-color: #2481cc;
-            }
+            QMenu::item:selected { background-color: #2481cc; }
         """)
 
         for speed in SPEED_OPTIONS:
@@ -394,7 +265,7 @@ class PlayerBar(QFrame):
         self._cover_path = track.cover_path
         self.title_label.setText(track.display_title)
         self.artist_label.setText(track.display_artist)
-        self.dur_label.setText(track.formatted_duration)
+        self.controls.set_duration(track.duration_seconds * 1000)
         self.btn_info.setEnabled(True)
         self.btn_lyrics.setEnabled(False)
         self.btn_like.setEnabled(True)
@@ -402,72 +273,39 @@ class PlayerBar(QFrame):
         self.update_cover(self._cover_path)
 
     def reset_track(self) -> None:
-        """Reset player bar to idle empty state when track is deleted/stopped."""
         self._current_track = None
         self._cover_path = None
-        self._duration_ms = 0
         self.title_label.setText("آهنگی در حال پخش نیست")
         self.artist_label.setText(f"{self._config.app_name} Desktop")
-        self.dur_label.setText("00:00")
-        self.pos_label.setText("00:00")
-        self.slider.setValue(0)
-        self.btn_play_pause.setText("▶")
+        self.controls.set_position(0)
+        self.controls.set_duration(0)
+        self.controls.set_playback_state(False)
         self.btn_lyrics.setEnabled(False)
         self.btn_info.setEnabled(False)
         self.btn_like.setEnabled(False)
         self.btn_like.setText("🤍")
-        self.btn_like.setToolTip("پسندیدن آهنگ (Like)")
-        self.artwork_badge.setPixmap(create_playerbar_cover_pixmap(size=48))
+        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(size=48))
 
     def update_reaction(self, is_liked: bool, heart_count: int) -> None:
-        """Update like button visual icon and tooltip."""
         self.btn_like.setText("❤️" if is_liked else "🤍")
         tip = f"پسندیده‌اید ({heart_count})" if is_liked else "پسندیدن آهنگ (Like)"
         self.btn_like.setToolTip(tip)
 
     def update_metadata(self, metadata: AudioMetadata) -> None:
-        has_lyrics = metadata.has_lyrics
-        self.btn_lyrics.setEnabled(has_lyrics)
-        if has_lyrics:
-            self.btn_lyrics.setToolTip("مشاهده متن آهنگ 📝 (موجود است)")
-        else:
-            self.btn_lyrics.setToolTip("متن آهنگ یافت نشد")
+        self.btn_lyrics.setEnabled(metadata.has_lyrics)
 
     def update_cover(self, cover_path: str | None) -> None:
         if cover_path:
             self._cover_path = cover_path
-
         minithumb = self._current_track.minithumbnail_data if self._current_track else None
-        active_path = self._cover_path or (self._current_track.cover_path if self._current_track else None)
-
-        pixmap = create_playerbar_cover_pixmap(
-            minithumb_data=minithumb,
-            cover_path=active_path,
-            size=48,
-        )
-        self.artwork_badge.setPixmap(pixmap)
+        active = self._cover_path or (self._current_track.cover_path if self._current_track else None)
+        self.artwork_badge.setPixmap(create_rounded_cover_pixmap(minithumb_data=minithumb, cover_path=active, size=48))
 
     def set_playback_state(self, is_playing: bool) -> None:
-        self.btn_play_pause.setText("⏸" if is_playing else "▶")
+        self.controls.set_playback_state(is_playing)
 
     def set_position(self, position_ms: int) -> None:
-        if not self._is_slider_dragging and self._duration_ms > 0:
-            val = int((position_ms / self._duration_ms) * 1000)
-            self.slider.setValue(val)
-
-        sec = position_ms // 1000
-        self.pos_label.setText(f"{sec // 60:02d}:{sec % 60:02d}")
+        self.controls.set_position(position_ms)
 
     def set_duration(self, duration_ms: int) -> None:
-        self._duration_ms = duration_ms
-        sec = duration_ms // 1000
-        self.dur_label.setText(f"{sec // 60:02d}:{sec % 60:02d}")
-
-    def _on_slider_pressed(self) -> None:
-        self._is_slider_dragging = True
-
-    def _on_slider_released(self) -> None:
-        self._is_slider_dragging = False
-        if self._duration_ms > 0:
-            target_ms = int((self.slider.value() / 1000.0) * self._duration_ms)
-            self.seek_requested.emit(target_ms)
+        self.controls.set_duration(duration_ms)

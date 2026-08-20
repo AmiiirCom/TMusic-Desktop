@@ -1,28 +1,32 @@
+# app/player/service.py
+
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 import shutil
-import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from app.config import AppConfig
-from app.core.metadata import (
-    AudioMetadata,
-    extract_metadata_from_player,
-    parse_id3v2_tags_from_bytes,
-)
+from app.core.metadata import AudioMetadata, extract_metadata_from_player
 from app.models.track import Track
-from app.network.stream_server import LocalStreamServer
 from app.platform.paths import has_sufficient_disk_space, sanitize_filename
-from app.settings.service import SettingsService
-from app.telegram.service import TelegramService
+from app.player.cache_sweeper import CacheSweeper
+from app.player.prefetcher import SmartPrefetchController
+from app.player.queue_manager import QueueManager
+
+if TYPE_CHECKING:
+    from app.network.stream_server import LocalStreamServer
+    from app.settings.service import SettingsService
+    from app.telegram.service import TelegramService
 
 logger = logging.getLogger("tmusic.player.service")
 
 
 class PlayerService(QObject):
-    """Audio playback engine supporting direct online streaming without disk caching."""
+    """Core audio playback service managing QtMultimedia, progressive streams, and queue lifecycle."""
 
     track_changed = Signal(object)
     playback_state_changed = Signal(bool)
@@ -40,32 +44,44 @@ class PlayerService(QObject):
         settings_service: SettingsService,
         cache_manager: Any,
         stream_server: LocalStreamServer | None = None,
+        parent: QObject | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(parent)
         self._config = config
         self._telegram = telegram_service
         self._settings = settings_service
         self._cache = cache_manager
         self._stream_server = stream_server
 
-        self._sweep_lock = threading.Lock()
+        self._queue = QueueManager(self)
+        self._sweeper = CacheSweeper(
+            config=self._config,
+            is_save_to_downloads_enabled=lambda: self._settings.preferences.save_to_downloads,
+        )
+
+        self._prefetcher = SmartPrefetchController(
+            is_save_enabled=lambda: self._settings.preferences.save_to_downloads,
+            is_playing=lambda: self.is_playing,
+            get_upcoming_track=self._queue.get_upcoming_track,
+            find_existing_disk=lambda t: bool(self._find_existing_download_on_disk(t)),
+            prefetch_audio_callback=self._telegram.prefetch_audio_file,
+            prefetch_cover_callback=self._telegram.prefetch_cover_file,
+        )
 
         self._player = QMediaPlayer(self)
         self._audio_output = QAudioOutput(self)
         self._player.setAudioOutput(self._audio_output)
         self._audio_output.setVolume(0.8)
 
-        self._playlist: list[Track] = []
-        self._known_tracks: dict[int, Track] = {}
-        self._current_index: int = -1
-        self._current_track: Track | None = None
-        self._current_metadata: AudioMetadata = AudioMetadata()
+        self._current_metadata = AudioMetadata()
         self._cached_paths: dict[int, str] = {}
         self._temp_streaming_file_ids: set[int] = set()
+        self._last_duration_ms = 0
 
-        self._has_prefetched_next: bool = False
-        self._last_duration_ms: int = 0
+        self._init_signals()
+        self._sweeper.start_sweep(async_mode=True)
 
+    def _init_signals(self) -> None:
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
@@ -77,132 +93,42 @@ class PlayerService(QObject):
         self._telegram.file_download_completed.connect(self._on_file_download_completed)
         self._telegram.file_download_progress.connect(self._on_file_download_progress)
 
-        self.sweep_and_export_internal_cache(async_mode=True)
-
     @property
     def is_playing(self) -> bool:
         return self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
 
     @property
-    def playback_rate(self) -> float:
-        return self._player.playbackRate()
-
-    @property
     def current_track(self) -> Track | None:
-        return self._current_track
+        return self._queue.current_track
 
     @property
     def current_metadata(self) -> AudioMetadata:
         return self._current_metadata
 
     def set_playlist(self, tracks: list[Track], start_track: Track | None = None) -> None:
-        self._playlist = list(tracks)
-        for t in tracks:
-            self._known_tracks[t.file_id] = t
-
+        self._queue.set_playlist(tracks)
         if start_track:
             self.play_track(start_track)
-        elif self._current_track:
-            self._update_current_index(self._current_track.id)
 
     def append_to_playlist(self, new_tracks: list[Track]) -> None:
-        existing_ids = {t.id for t in self._playlist}
-        unique_new = [t for t in new_tracks if t.id not in existing_ids]
-        self._playlist.extend(unique_new)
-        for t in unique_new:
-            self._known_tracks[t.file_id] = t
-
-        if self._current_track:
-            self._update_current_index(self._current_track.id)
+        self._queue.append_tracks(new_tracks)
 
     def prepend_to_playlist(self, new_tracks: list[Track]) -> None:
-        existing_ids = {t.id for t in self._playlist}
-        unique_new = [t for t in new_tracks if t.id not in existing_ids]
-        if not unique_new:
-            return
-
-        self._playlist = unique_new + self._playlist
-        for t in unique_new:
-            self._known_tracks[t.file_id] = t
-
-        if self._current_track:
-            self._update_current_index(self._current_track.id)
+        self._queue.prepend_tracks(new_tracks)
 
     def remove_from_playlist(self, chat_id: int, deleted_track_ids: list[str]) -> None:
-        del_set = set(deleted_track_ids)
-        self._playlist = [t for t in self._playlist if t.id not in del_set]
-
-        if self._current_track and self._current_track.id in del_set:
-            logger.info("Active track was deleted from Telegram channel. Halting playback.")
+        if self._queue.remove_tracks(deleted_track_ids):
             self.stop()
-        elif self._current_track:
-            self._update_current_index(self._current_track.id)
 
     @Slot(str, str)
     def update_track_cover(self, track_id: str, cover_path: str) -> None:
-        """Update cover path in memory for known tracks and active playback."""
-        for idx, t in enumerate(self._playlist):
-            if t.id == track_id:
-                updated = Track(
-                    id=t.id,
-                    chat_id=t.chat_id,
-                    message_id=t.message_id,
-                    file_id=t.file_id,
-                    title=t.title,
-                    artist=t.artist,
-                    duration_seconds=t.duration_seconds,
-                    size_bytes=t.size_bytes,
-                    file_name=t.file_name,
-                    mime_type=t.mime_type,
-                    local_path=t.local_path,
-                    is_downloaded=t.is_downloaded,
-                    date_timestamp=t.date_timestamp,
-                    minithumbnail_data=t.minithumbnail_data,
-                    cover_file_id=t.cover_file_id,
-                    cover_path=cover_path,
-                    is_liked=t.is_liked,
-                    heart_count=t.heart_count,
-                )
-                self._playlist[idx] = updated
-                self._known_tracks[t.file_id] = updated
-
-                if self._current_track and self._current_track.id == track_id:
-                    self._current_track = updated
-                break
+        self._queue.update_cover(track_id, cover_path)
 
     @Slot(object, object, bool, int)
     def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
-        """Update track reaction status in playlist and active playing track."""
-        track_id = f"{chat_id}_{message_id}"
-        for idx, t in enumerate(self._playlist):
-            if t.id == track_id:
-                updated = Track(
-                    id=t.id,
-                    chat_id=t.chat_id,
-                    message_id=t.message_id,
-                    file_id=t.file_id,
-                    title=t.title,
-                    artist=t.artist,
-                    duration_seconds=t.duration_seconds,
-                    size_bytes=t.size_bytes,
-                    file_name=t.file_name,
-                    mime_type=t.mime_type,
-                    local_path=t.local_path,
-                    is_downloaded=t.is_downloaded,
-                    date_timestamp=t.date_timestamp,
-                    minithumbnail_data=t.minithumbnail_data,
-                    cover_file_id=t.cover_file_id,
-                    cover_path=t.cover_path,
-                    is_liked=is_liked,
-                    heart_count=heart_count,
-                )
-                self._playlist[idx] = updated
-                self._known_tracks[t.file_id] = updated
-
-                if self._current_track and self._current_track.id == track_id:
-                    self._current_track = updated
-                    self.track_changed.emit(updated)
-                break
+        self._queue.update_reaction(chat_id, message_id, is_liked, heart_count)
+        if self.current_track and self.current_track.id == f"{chat_id}_{message_id}":
+            self.track_changed.emit(self.current_track)
 
     def stop(self) -> None:
         try:
@@ -212,230 +138,59 @@ class PlayerService(QObject):
             pass
 
         self._cleanup_temp_stream_files(keep_file_id=None)
-
-        self._current_track = None
-        self._current_index = -1
+        self._queue.clear()
         self._current_metadata = AudioMetadata()
+        self._prefetcher.reset()
+
         self.playback_state_changed.emit(False)
         self.position_changed.emit(0)
         self.duration_changed.emit(0)
         self.track_changed.emit(None)
         self.metadata_updated.emit(self._current_metadata)
 
-    def _update_current_index(self, track_id: str) -> None:
-        for idx, t in enumerate(self._playlist):
-            if t.id == track_id:
-                self._current_index = idx
-                return
-
-    def _get_clean_download_destination(self, track: Track) -> Path:
-        ext = Path(track.file_name).suffix or ".mp3"
-        clean_title = sanitize_filename(f"{track.display_artist} - {track.display_title}{ext}")
-        return self._config.downloads_dir / clean_title
-
-    def _find_existing_download_on_disk(self, track: Track) -> Path | None:
-        persisted_path = self._settings.get_downloaded_track_path(track.id, track.file_id)
-        if persisted_path:
-            p = Path(persisted_path)
-            if p.exists() and p.stat().st_size > 0:
-                return p
-
-        mem_cached = self._cached_paths.get(track.file_id)
-        if mem_cached:
-            p = Path(mem_cached)
-            if p.exists() and p.stat().st_size > 0:
-                return p
-
-        ext = Path(track.file_name).suffix or ".mp3"
-        candidates = [
-            self._get_clean_download_destination(track),
-            self._config.downloads_dir / sanitize_filename(track.file_name),
-            self._config.downloads_dir / sanitize_filename(f"{track.display_title}{ext}"),
-            self._config.downloads_dir / sanitize_filename(f"{track.title}{ext}"),
-        ]
-
-        for cand in candidates:
-            if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
-                return cand
-
-        if track.size_bytes > 0 and self._config.downloads_dir.exists():
-            for f in self._config.downloads_dir.glob("*"):
-                if f.is_file() and f.stat().st_size == track.size_bytes:
-                    return f
-
-        return None
-
-    def _resolve_clean_name_for_file(self, file_path: Path) -> str:
-        ext = file_path.suffix or ".mp3"
-        try:
-            with open(file_path, "rb") as f:
-                header_bytes = f.read(512 * 1024)
-                meta = parse_id3v2_tags_from_bytes(header_bytes)
-                if meta.title and meta.artist:
-                    return sanitize_filename(f"{meta.artist} - {meta.title}{ext}")
-                elif meta.title:
-                    return sanitize_filename(f"{meta.title}{ext}")
-        except Exception:
-            pass
-
-        return sanitize_filename(file_path.name)
-
-    def _cleanup_temp_stream_files(self, keep_file_id: int | None = None) -> None:
-        """Purge temporary streaming files from disk when offline caching is disabled."""
-        if self._settings.preferences.save_to_downloads:
-            return
-
-        to_remove = [fid for fid in self._temp_streaming_file_ids if fid != keep_file_id]
-        for fid in to_remove:
-            self._temp_streaming_file_ids.discard(fid)
-            self._cached_paths.pop(fid, None)
-            self._cache.remove_file(fid, delete_from_tdlib=True)
-            logger.debug("Purged online streaming temp cache for file_id=%d", fid)
-
-    def _purge_tdlib_audio_cache(self) -> None:
-        """Remove any residual audio cache files from TDLib directory when save_to_downloads is False."""
-        cache_dir = self._config.tdlib_files_dir
-        if not cache_dir.exists():
-            return
-
-        audio_exts = (".mp3", ".flac", ".m4a", ".wav", ".aac", ".ogg", ".opus")
-        for file_path in list(cache_dir.rglob("*")):
-            if file_path.is_file() and file_path.suffix.lower() in audio_exts:
-                try:
-                    file_path.unlink(missing_ok=True)
-                    logger.debug("Purged residual cache file: %s", file_path.name)
-                except Exception:
-                    pass
-
-    def sweep_and_export_internal_cache(self, async_mode: bool = True) -> None:
-        if async_mode:
-            thread = threading.Thread(
-                target=self._run_sweep_worker,
-                name="TMusicCacheSweeper",
-                daemon=True,
-            )
-            thread.start()
-        else:
-            self._run_sweep_worker()
-
-    def _run_sweep_worker(self) -> None:
-        if not self._sweep_lock.acquire(blocking=False):
-            return
-
-        try:
-            if not self._settings.preferences.save_to_downloads:
-                self._purge_tdlib_audio_cache()
-                return
-
-            cache_dir = self._config.tdlib_files_dir
-            if not cache_dir.exists():
-                return
-
-            audio_exts = (".mp3", ".flac", ".m4a", ".wav", ".aac", ".ogg", ".opus")
-            for file_path in list(cache_dir.rglob("*")):
-                if file_path.is_file() and file_path.suffix.lower() in audio_exts:
-                    if file_path.stat().st_size == 0 or file_path.name.endswith(".temp"):
-                        continue
-
-                    clean_name = self._resolve_clean_name_for_file(file_path)
-                    dest_file = self._config.downloads_dir / clean_name
-
-                    try:
-                        self._config.downloads_dir.mkdir(parents=True, exist_ok=True)
-                        src_size = file_path.stat().st_size
-
-                        if has_sufficient_disk_space(self._config.downloads_dir, src_size):
-                            if not dest_file.exists() or dest_file.stat().st_size != src_size:
-                                shutil.copy2(file_path, dest_file)
-
-                            if dest_file.exists() and dest_file.stat().st_size == src_size:
-                                file_path.unlink(missing_ok=True)
-                                logger.debug("✨ Migrated to TMusicDownloads: %s", dest_file.name)
-                    except Exception as exc:
-                        logger.debug("Background sweeper error for %s: %s", file_path, exc)
-        finally:
-            self._sweep_lock.release()
-
     def play_track(self, track: Track) -> None:
-        self._current_track = track
-        self._known_tracks[track.file_id] = track
-        self._has_prefetched_next = False
+        self._queue.set_active_track(track)
+        self._prefetcher.reset()
         self._current_metadata = AudioMetadata(title=track.display_title, artist=track.display_artist)
-        self._update_current_index(track.id)
         self.track_changed.emit(track)
         self.metadata_updated.emit(self._current_metadata)
 
-        # 1. Check if track already exists in local downloads directory
         existing_file = self._find_existing_download_on_disk(track)
         if existing_file:
             self._cached_paths[track.file_id] = str(existing_file)
             self._settings.register_downloaded_track(track.id, track.file_id, str(existing_file))
             self._telegram.register_downloaded_path(track.file_id, str(existing_file))
-            logger.info("⚡ Instant local play from disk: %s", existing_file.name)
             self._start_playback_source(QUrl.fromLocalFile(str(existing_file.resolve())))
             return
 
-        # 2. Pure online streaming mode without persistent disk caching
         if not self._settings.preferences.save_to_downloads:
             self._cleanup_temp_stream_files(keep_file_id=track.file_id)
             self._temp_streaming_file_ids.add(track.file_id)
 
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
-            logger.info("🌐 Pure Online Progressive Stream: %s", stream_url)
             self._start_playback_source(QUrl(stream_url))
             self._telegram.download_file(track.file_id)
         else:
             self._telegram.download_file(track.file_id)
-
-    def _start_playback_source(self, url: QUrl) -> None:
-        try:
-            self._player.setSource(url)
-            self._player.play()
-        except Exception as exc:
-            logger.warning("Could not set player source (%s): %s", url, exc)
-
-    def _switch_active_stream_to_local_file(self, local_file: Path) -> None:
-        if not local_file.exists() or local_file.stat().st_size == 0:
-            return
-
-        current_url = self._player.source().toString()
-        if "http://" in current_url or "127.0.0.1" in current_url:
-            saved_pos = self._player.position()
-            was_playing = self.is_playing
-            local_url = QUrl.fromLocalFile(str(local_file.resolve()))
-
-            logger.info("🔄 Seamless Switch to Local File: %s at %d ms", local_file.name, saved_pos)
-
-            self._player.setSource(local_url)
-            if saved_pos > 0:
-                self._player.setPosition(saved_pos)
-            if was_playing:
-                self._player.play()
-                if saved_pos > 0:
-                    self._player.setPosition(saved_pos)
 
     def toggle_play_pause(self) -> None:
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
         elif self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
             self._player.play()
-        elif self._current_track:
-            self.play_track(self._current_track)
+        elif self.current_track:
+            self.play_track(self.current_track)
 
     def play_next(self) -> None:
-        if not self._playlist:
-            return
-        next_idx = (self._current_index + 1) % len(self._playlist)
-        self._current_index = next_idx
-        self.play_track(self._playlist[next_idx])
+        next_track = self._queue.get_next_track()
+        if next_track:
+            self.play_track(next_track)
 
     def play_previous(self) -> None:
-        if not self._playlist:
-            return
-        prev_idx = (self._current_index - 1 + len(self._playlist)) % len(self._playlist)
-        self._current_index = prev_idx
-        self.play_track(self._playlist[prev_idx])
+        prev_track = self._queue.get_previous_track()
+        if prev_track:
+            self.play_track(prev_track)
 
     def seek(self, position_ms: int) -> None:
         try:
@@ -448,51 +203,55 @@ class PlayerService(QObject):
         self._audio_output.setVolume(vol)
 
     def set_playback_rate(self, rate: float) -> None:
-        clamped_rate = max(0.5, min(2.0, rate))
-        self._player.setPlaybackRate(clamped_rate)
-        self.playback_rate_changed.emit(clamped_rate)
+        clamped = max(0.5, min(2.0, rate))
+        self._player.setPlaybackRate(clamped)
+        self.playback_rate_changed.emit(clamped)
 
-    def set_muted(self, muted: bool) -> None:
-        self._audio_output.setMuted(muted)
+    def _start_playback_source(self, url: QUrl) -> None:
+        try:
+            self._player.setSource(url)
+            self._player.play()
+        except Exception as exc:
+            logger.warning("Could not set player source (%s): %s", url, exc)
 
-    def _check_smart_prefetch(self, position_ms: int, duration_ms: int) -> None:
-        if duration_ms <= 0 or self._has_prefetched_next or not self.is_playing:
-            return
+    def _find_existing_download_on_disk(self, track: Track) -> Path | None:
+        persisted = self._settings.get_downloaded_track_path(track.id, track.file_id)
+        if persisted:
+            p = Path(persisted)
+            if p.exists() and p.stat().st_size > 0:
+                return p
 
-        # Do not prefetch audio files to disk if offline saving is disabled
-        if not self._settings.preferences.save_to_downloads:
-            return
+        mem_cached = self._cached_paths.get(track.file_id)
+        if mem_cached:
+            p = Path(mem_cached)
+            if p.exists() and p.stat().st_size > 0:
+                return p
 
-        progress = position_ms / duration_ms
-        remaining_sec = (duration_ms - position_ms) / 1000
+        ext = Path(track.file_name).suffix or ".mp3"
+        clean_target = self._config.downloads_dir / sanitize_filename(
+            f"{track.display_artist} - {track.display_title}{ext}"
+        )
+        if clean_target.exists() and clean_target.stat().st_size > 0:
+            return clean_target
 
-        if progress >= 0.70 or (duration_ms > 45_000 and remaining_sec <= 30):
-            self._has_prefetched_next = True
-            self._prefetch_upcoming_track()
+        return None
 
-    def _prefetch_upcoming_track(self) -> None:
-        if not self._playlist or len(self._playlist) <= 1:
-            return
-
-        next_idx = (self._current_index + 1) % len(self._playlist)
-        next_track = self._playlist[next_idx]
-
-        if self._find_existing_download_on_disk(next_track):
-            return
-
+    def _cleanup_temp_stream_files(self, keep_file_id: int | None = None) -> None:
         if self._settings.preferences.save_to_downloads:
-            self._telegram.prefetch_audio_file(next_track.file_id)
+            return
 
-        if next_track.cover_file_id and not next_track.cover_path:
-            self._telegram.prefetch_cover_file(next_track.id, next_track.cover_file_id)
+        to_remove = [fid for fid in self._temp_streaming_file_ids if fid != keep_file_id]
+        for fid in to_remove:
+            self._temp_streaming_file_ids.discard(fid)
+            self._cached_paths.pop(fid, None)
+            self._cache.remove_file(fid, delete_from_tdlib=True)
 
     @Slot()
     def _on_media_metadata_changed(self) -> None:
-        local_path = self._cached_paths.get(self._current_track.file_id) if self._current_track else None
-
+        local_path = self._cached_paths.get(self.current_track.file_id) if self.current_track else None
         header_bytes = None
-        if not (local_path and Path(local_path).exists()) and self._current_track:
-            header_bytes = self._telegram.get_file_header_bytes(self._current_track.file_id)
+        if not (local_path and Path(local_path).exists()) and self.current_track:
+            header_bytes = self._telegram.get_file_header_bytes(self.current_track.file_id)
 
         self._current_metadata = extract_metadata_from_player(
             self._player, local_file_path=local_path, header_bytes=header_bytes
@@ -502,7 +261,7 @@ class PlayerService(QObject):
     @Slot(int)
     def _on_position_changed(self, position_ms: int) -> None:
         self.position_changed.emit(position_ms)
-        self._check_smart_prefetch(position_ms, self._last_duration_ms)
+        self._prefetcher.check_progress(position_ms, self._last_duration_ms)
 
     @Slot(int)
     def _on_duration_changed(self, duration_ms: int) -> None:
@@ -518,54 +277,37 @@ class PlayerService(QObject):
     @Slot(int, str)
     def _on_file_download_completed(self, file_id: int, internal_path_str: str) -> None:
         if not internal_path_str or not internal_path_str.strip():
-            logger.debug("Empty path for file_id %d", file_id)
             return
 
         internal_path = Path(internal_path_str)
-
-        try:
-            if not internal_path.exists() or internal_path.stat().st_size == 0:
-                logger.debug("File %s not available for file_id %d", internal_path, file_id)
-                return
-        except Exception as exc:
-            logger.debug("Cannot access %s for file_id %d: %s", internal_path, file_id, exc)
+        if not internal_path.exists() or internal_path.stat().st_size == 0:
             return
 
         if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
             return
 
-        # When offline saving is disabled, keep playback purely online and do not save to cache or disk
         if not self._settings.preferences.save_to_downloads:
             self._temp_streaming_file_ids.add(file_id)
             if self._stream_server:
                 self._stream_server.register_completed_file(file_id, str(internal_path))
-            if self._current_track and self._current_track.file_id == file_id:
-                self._on_media_metadata_changed()
             return
 
-        matching_track = self._known_tracks.get(file_id)
-        if not matching_track:
-            if self._current_track and self._current_track.file_id == file_id:
-                matching_track = self._current_track
-            else:
-                for t in self._playlist:
-                    if t.file_id == file_id:
-                        matching_track = t
-                        break
-
+        matching_track = self._queue.get_track_by_file_id(file_id)
         if matching_track:
-            dest_file = self._get_clean_download_destination(matching_track)
+            ext = Path(matching_track.file_name).suffix or ".mp3"
+            clean_name = sanitize_filename(
+                f"{matching_track.display_artist} - {matching_track.display_title}{ext}"
+            )
+            dest_file = self._config.downloads_dir / clean_name
             track_id = matching_track.id
         else:
-            clean_name = self._resolve_clean_name_for_file(internal_path)
+            clean_name = CacheSweeper.resolve_clean_filename(internal_path)
             dest_file = self._config.downloads_dir / clean_name
             track_id = f"0_{file_id}"
 
         src_size = internal_path.stat().st_size
-
         try:
             self._config.downloads_dir.mkdir(parents=True, exist_ok=True)
-
             if has_sufficient_disk_space(self._config.downloads_dir, src_size):
                 if not dest_file.exists() or dest_file.stat().st_size != src_size:
                     shutil.copy2(internal_path, dest_file)
@@ -575,33 +317,34 @@ class PlayerService(QObject):
                     self._settings.register_downloaded_track(track_id, file_id, str(dest_file))
                     self._telegram.register_downloaded_path(file_id, str(dest_file))
 
-                    logger.info("✅ Exported to TMusicDownloads: %s", dest_file.name)
-
-                    if self._current_track and self._current_track.file_id == file_id:
-                        self._switch_active_stream_to_local_file(dest_file)
+                    if self.current_track and self.current_track.file_id == file_id:
+                        self._switch_to_local_file(dest_file)
 
                     self._cache.remove_file(file_id, delete_from_tdlib=True)
-                    logger.debug("🗑️ Removed cached temp file (file_id=%d)", file_id)
-
         except Exception as exc:
-            logger.warning("Could not export to %s: %s", dest_file, exc)
-            self._cached_paths[file_id] = str(internal_path)
+            logger.warning("Could not export download to %s: %s", dest_file, exc)
 
-        if self._current_track and self._current_track.file_id == file_id:
-            self._on_media_metadata_changed()
+    def _switch_to_local_file(self, local_file: Path) -> None:
+        current_url = self._player.source().toString()
+        if "http://" in current_url or "127.0.0.1" in current_url:
+            pos = self._player.position()
+            playing = self.is_playing
+            self._player.setSource(QUrl.fromLocalFile(str(local_file.resolve())))
+            if pos > 0:
+                self._player.setPosition(pos)
+            if playing:
+                self._player.play()
 
     @Slot(int, int, int)
     def _on_file_download_progress(self, file_id: int, downloaded: int, total: int) -> None:
-        if self._current_track and self._current_track.file_id == file_id:
+        if self.current_track and self.current_track.file_id == file_id:
             self.download_progress.emit(downloaded, total)
 
     @Slot(QMediaPlayer.PlaybackState)
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        is_playing = state == QMediaPlayer.PlaybackState.PlayingState
-        self.playback_state_changed.emit(is_playing)
+        self.playback_state_changed.emit(state == QMediaPlayer.PlaybackState.PlayingState)
 
     @Slot(QMediaPlayer.MediaStatus)
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            logger.debug("Track reached end. Transitioning to next...")
             self.play_next()
