@@ -3,10 +3,11 @@ from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
+    QRectF,
     QSize,
     Qt,
 )
-from PySide6.QtGui import QColor, QMouseEvent, QPainter
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -22,7 +23,10 @@ from app.ui.utils.icons import get_svg_icon
 
 
 class BaseModalDialog(QDialog):
-    """Full-window modal backdrop dialog with reliable lifecycle and smooth exit transitions."""
+    """
+    Full-window modal backdrop dialog with rounded-corner clipping
+    synchronized with the main application window frame.
+    """
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -123,14 +127,24 @@ class BaseModalDialog(QDialog):
 
         root_layout.addWidget(self.card_frame)
 
-        # Entire dialog opacity effect (smoothly fades backdrop + card together)
+        # Entire dialog opacity effect
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._opacity_effect)
         self._opacity_effect.setOpacity(0.0)
 
     def paintEvent(self, event: Any) -> None:
+        """Render anti-aliased backdrop matching the main window's rounded corners."""
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 160))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Check if the host window is maximized to adjust corner radius
+        parent = self.parentWidget()
+        is_max = parent.window().isMaximized() if parent else False
+        radius = 0.0 if is_max else 10.0
+
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), radius, radius)
+        painter.fillPath(path, QColor(0, 0, 0, 160))
         painter.end()
 
     def showEvent(self, event: Any) -> None:
