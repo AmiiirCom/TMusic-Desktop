@@ -11,6 +11,7 @@ from app.models.user import TelegramUser
 
 logger = logging.getLogger("tmusic.settings.service")
 
+
 @dataclass(slots=True)
 class ProxySettings:
     enabled: bool = False
@@ -20,17 +21,20 @@ class ProxySettings:
     username: str = ""
     password: str = ""
 
+
 @dataclass(slots=True)
 class UserPreferences:
     volume: int = 80
     is_muted: bool = False
     playback_rate: float = 1.0
     minimize_to_tray: bool = True
+    save_to_downloads: bool = True
     last_chat_id: int = 0
     proxy: ProxySettings = field(default_factory=ProxySettings)
     cached_music_chats: list[dict[str, Any]] = field(default_factory=list)
     cached_user_profile: dict[str, Any] = field(default_factory=dict)
     downloaded_tracks_map: dict[str, str] = field(default_factory=dict)  # track_id/file_id -> local_path
+
 
 class SettingsService:
     """Manages secure encrypted user settings, cached chats, and persistent downloaded tracks registry."""
@@ -67,6 +71,7 @@ class SettingsService:
                 is_muted=data.get("is_muted", False),
                 playback_rate=float(data.get("playback_rate", 1.0)),
                 minimize_to_tray=data.get("minimize_to_tray", True),
+                save_to_downloads=data.get("save_to_downloads", True),
                 last_chat_id=data.get("last_chat_id", 0),
                 proxy=proxy,
                 cached_music_chats=data.get("cached_music_chats", []),
@@ -83,6 +88,7 @@ class SettingsService:
             "is_muted": self._preferences.is_muted,
             "playback_rate": self._preferences.playback_rate,
             "minimize_to_tray": self._preferences.minimize_to_tray,
+            "save_to_downloads": self._preferences.save_to_downloads,
             "last_chat_id": self._preferences.last_chat_id,
             "proxy": asdict(self._preferences.proxy),
             "cached_music_chats": self._preferences.cached_music_chats,
@@ -191,6 +197,11 @@ class SettingsService:
 
     def set_playback_rate(self, rate: float) -> None:
         self._preferences.playback_rate = rate
+        self.save()
+
+    def set_save_to_downloads(self, enabled: bool) -> None:
+        """Enable or disable persistent export of downloaded tracks to TMusicDownloads."""
+        self._preferences.save_to_downloads = enabled
         self.save()
 
     def set_last_chat(self, chat_id: int) -> None:

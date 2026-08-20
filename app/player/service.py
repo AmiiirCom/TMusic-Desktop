@@ -22,7 +22,7 @@ logger = logging.getLogger("tmusic.player.service")
 
 
 class PlayerService(QObject):
-    """Audio playback engine with instant progressive streaming and local export."""
+    """Audio playback engine supporting direct online streaming without disk caching."""
 
     track_changed = Signal(object)
     playback_state_changed = Signal(bool)
@@ -61,6 +61,7 @@ class PlayerService(QObject):
         self._current_track: Track | None = None
         self._current_metadata: AudioMetadata = AudioMetadata()
         self._cached_paths: dict[int, str] = {}
+        self._temp_streaming_file_ids: set[int] = set()
 
         self._has_prefetched_next: bool = False
         self._last_duration_ms: int = 0
@@ -144,6 +145,8 @@ class PlayerService(QObject):
         except Exception:
             pass
 
+        self._cleanup_temp_stream_files(keep_file_id=None)
+
         self._current_track = None
         self._current_index = -1
         self._current_metadata = AudioMetadata()
@@ -211,6 +214,33 @@ class PlayerService(QObject):
 
         return sanitize_filename(file_path.name)
 
+    def _cleanup_temp_stream_files(self, keep_file_id: int | None = None) -> None:
+        """Purge temporary streaming files from disk when offline caching is disabled."""
+        if self._settings.preferences.save_to_downloads:
+            return
+
+        to_remove = [fid for fid in self._temp_streaming_file_ids if fid != keep_file_id]
+        for fid in to_remove:
+            self._temp_streaming_file_ids.discard(fid)
+            self._cached_paths.pop(fid, None)
+            self._cache.remove_file(fid, delete_from_tdlib=True)
+            logger.debug("Purged online streaming temp cache for file_id=%d", fid)
+
+    def _purge_tdlib_audio_cache(self) -> None:
+        """Remove any residual audio cache files from TDLib directory when save_to_downloads is False."""
+        cache_dir = self._config.tdlib_files_dir
+        if not cache_dir.exists():
+            return
+
+        audio_exts = (".mp3", ".flac", ".m4a", ".wav", ".aac", ".ogg", ".opus")
+        for file_path in list(cache_dir.rglob("*")):
+            if file_path.is_file() and file_path.suffix.lower() in audio_exts:
+                try:
+                    file_path.unlink(missing_ok=True)
+                    logger.debug("Purged residual cache file: %s", file_path.name)
+                except Exception:
+                    pass
+
     def sweep_and_export_internal_cache(self, async_mode: bool = True) -> None:
         if async_mode:
             thread = threading.Thread(
@@ -227,6 +257,10 @@ class PlayerService(QObject):
             return
 
         try:
+            if not self._settings.preferences.save_to_downloads:
+                self._purge_tdlib_audio_cache()
+                return
+
             cache_dir = self._config.tdlib_files_dir
             if not cache_dir.exists():
                 return
@@ -265,18 +299,24 @@ class PlayerService(QObject):
         self.track_changed.emit(track)
         self.metadata_updated.emit(self._current_metadata)
 
+        # 1. Check if track already exists in local downloads directory
         existing_file = self._find_existing_download_on_disk(track)
         if existing_file:
             self._cached_paths[track.file_id] = str(existing_file)
             self._settings.register_downloaded_track(track.id, track.file_id, str(existing_file))
             self._telegram.register_downloaded_path(track.file_id, str(existing_file))
-            logger.info("⚡ Instant play from local TMusicDownloads: %s", existing_file.name)
+            logger.info("⚡ Instant local play from disk: %s", existing_file.name)
             self._start_playback_source(QUrl.fromLocalFile(str(existing_file.resolve())))
             return
 
+        # 2. Pure online streaming mode without persistent disk caching
+        if not self._settings.preferences.save_to_downloads:
+            self._cleanup_temp_stream_files(keep_file_id=track.file_id)
+            self._temp_streaming_file_ids.add(track.file_id)
+
         if self._stream_server:
             stream_url = self._stream_server.get_stream_url(track.file_id, size_bytes=track.size_bytes)
-            logger.info("⚡ Progressive Stream starting: %s", stream_url)
+            logger.info("🌐 Pure Online Progressive Stream: %s", stream_url)
             self._start_playback_source(QUrl(stream_url))
             self._telegram.download_file(track.file_id)
         else:
@@ -299,7 +339,7 @@ class PlayerService(QObject):
             was_playing = self.is_playing
             local_url = QUrl.fromLocalFile(str(local_file.resolve()))
 
-            logger.info("🔄 Seamless Live-to-Local Switch: %s at %d ms", local_file.name, saved_pos)
+            logger.info("🔄 Seamless Switch to Local File: %s at %d ms", local_file.name, saved_pos)
 
             self._player.setSource(local_url)
             if saved_pos > 0:
@@ -353,6 +393,10 @@ class PlayerService(QObject):
         if duration_ms <= 0 or self._has_prefetched_next or not self.is_playing:
             return
 
+        # Do not prefetch audio files to disk if offline saving is disabled
+        if not self._settings.preferences.save_to_downloads:
+            return
+
         progress = position_ms / duration_ms
         remaining_sec = (duration_ms - position_ms) / 1000
 
@@ -370,7 +414,8 @@ class PlayerService(QObject):
         if self._find_existing_download_on_disk(next_track):
             return
 
-        self._telegram.prefetch_audio_file(next_track.file_id)
+        if self._settings.preferences.save_to_downloads:
+            self._telegram.prefetch_audio_file(next_track.file_id)
 
         if next_track.cover_file_id and not next_track.cover_path:
             self._telegram.prefetch_cover_file(next_track.id, next_track.cover_file_id)
@@ -421,6 +466,15 @@ class PlayerService(QObject):
             return
 
         if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+            return
+
+        # When offline saving is disabled, keep playback purely online and do not save to cache or disk
+        if not self._settings.preferences.save_to_downloads:
+            self._temp_streaming_file_ids.add(file_id)
+            if self._stream_server:
+                self._stream_server.register_completed_file(file_id, str(internal_path))
+            if self._current_track and self._current_track.file_id == file_id:
+                self._on_media_metadata_changed()
             return
 
         matching_track = self._known_tracks.get(file_id)

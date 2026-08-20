@@ -1,6 +1,7 @@
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QFrame,
@@ -17,6 +18,7 @@ from app.cache.service import CacheManager
 from app.config import AppConfig
 from app.settings.service import SettingsService
 from app.ui.views.base_modal import BaseModalDialog
+
 
 class SettingsDialog(BaseModalDialog):
     """Clean, well-proportioned Settings, Proxy, and Storage management modal."""
@@ -41,6 +43,7 @@ class SettingsDialog(BaseModalDialog):
         self._init_body()
 
     def _init_body(self) -> None:
+        # Proxy Section
         proxy_title = QLabel("🛡️ تنظیمات پروکسی تلگرام (رمزنگاری‌شده)")
         proxy_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(proxy_title)
@@ -75,9 +78,47 @@ class SettingsDialog(BaseModalDialog):
         sep1.setStyleSheet("color: #242f3d; margin: 4px 0;")
         self.body_layout.addWidget(sep1)
 
-        storage_title = QLabel("📂 محل ذخیره آهنگ‌ها (Downloads)")
+        # Storage & Download Settings
+        storage_title = QLabel("📂 مدیریت دانلود و ذخیره‌سازی")
         storage_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(storage_title)
+
+        # Save to Downloads Toggle
+        self.save_downloads_checkbox = QCheckBox("ذخیره خودکار آهنگ‌ها در حافظه (پخش آفلاین)")
+        self.save_downloads_checkbox.setChecked(self._settings.preferences.save_to_downloads)
+        self.save_downloads_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_downloads_checkbox.toggled.connect(self._on_toggle_save_to_downloads)
+        self.save_downloads_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: bold;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 1px solid #2f3e50;
+                background-color: #242f3d;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #2481cc;
+                border-color: #2481cc;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #2481cc;
+            }
+        """)
+        self.body_layout.addWidget(self.save_downloads_checkbox)
+
+        save_hint_label = QLabel(
+            "در صورت غیرفعال بودن، آهنگ‌ها کاملاً آنلاین و مستقیم پخش شده و هیچ فایلی در کش یا حافظه دستگاه ذخیره نمی‌شود "
+            "(در صورت وجود قبلی در پوشه دانلودها، از حافظه پخش خواهد شد)."
+        )
+        save_hint_label.setStyleSheet("color: #7f91a4; font-size: 11px; margin-bottom: 4px;")
+        save_hint_label.setWordWrap(True)
+        self.body_layout.addWidget(save_hint_label)
 
         path_label = QLabel(str(self._cache._config.downloads_dir))
         path_label.setStyleSheet("color: #7f91a4; font-size: 11px;")
@@ -144,6 +185,9 @@ class SettingsDialog(BaseModalDialog):
 
         self._settings.set_proxy(ptype, server, port, enabled=True)
         self.proxy_saved.emit(ptype, server, port)
+
+    def _on_toggle_save_to_downloads(self, checked: bool) -> None:
+        self._settings.set_save_to_downloads(checked)
 
     def _on_open_downloads_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._cache._config.downloads_dir)))
