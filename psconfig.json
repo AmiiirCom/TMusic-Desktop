@@ -1,0 +1,39 @@
+{
+  "root": "../",
+  "output": "project_snapshot",
+  "format": "yaml",
+  "max_size": 10485760,
+  "min_size": 0,
+  "include_patterns": [],
+  "exclude_patterns": [],
+  "include_extensions": [
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml", ".toml",
+    ".md", ".txt", ".sh", ".bash", ".c", ".cpp", ".h", ".hpp",
+    ".java", ".kt", ".go", ".rs", ".php", ".rb", ".swift", ".sql",
+    ".html", ".css", ".scss", ".sass", ".less", ".vue", ".xml", ".ini", ".cfg", ".conf"
+  ],
+  "exclude_extensions": [
+    ".exe", ".dll", ".so", ".dylib", ".pyc", ".pyo", ".class", ".o", ".obj",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
+    ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".mp4", ".mkv", ".avi", ".mov", ".webm",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".db", ".sqlite", ".sqlite3",
+    ".log", ".pem", ".key", ".crt", ".cer"
+  ],
+  "include_files": [
+    "Dockerfile", "Makefile", "CMakeLists.txt", "Procfile",
+    ".gitignore", ".dockerignore", ".editorconfig"
+  ],
+  "exclude_files": [
+    "project_snapshot.md", ".env", ".env.local", ".env.production", ".env.development",
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Todo.md", "Agent.md", "ProjectStructure.md", "project_snapshot.md"
+  ],
+  "exclude_dirs": [
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".tox", ".nox", "dist", "build", "out", ".idea", ".vscode",
+    "coverage", ".coverage", ".next", ".nuxt", ".turbo", "target", "vendor"
+  ],
+  "compress": true,
+  "aggressive": false,
+  "no_tree": false
+}
