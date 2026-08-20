@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self._main_view = MainView(self._config, self)
         self._main_view.chat_selected.connect(self._on_chat_selected)
         self._main_view.track_selected.connect(self._on_track_selected)
+        self._main_view.track_like_toggled.connect(self._telegram.toggle_track_like)
         self._main_view.load_more_tracks_requested.connect(self._telegram.load_more_tracks)
         self._main_view.settings_requested.connect(self._open_settings_dialog)
         self._main_view.search_full_requested.connect(self._telegram.search_tracks)
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
         player_bar.lyrics_clicked.connect(self._open_lyrics_dialog)
         player_bar.track_info_clicked.connect(self._open_track_info_dialog)
         player_bar.track_label_clicked.connect(self._on_track_label_clicked)
+        player_bar.like_clicked.connect(self._on_player_like_clicked)
 
         # Restore saved settings
         saved_vol = self._settings.preferences.volume
@@ -135,6 +137,8 @@ class MainWindow(QMainWindow):
         self._telegram.network_traffic_received.connect(self._meter.update_network_stats)
         self._telegram.cover_downloaded.connect(self._main_view.update_track_cover)
         self._telegram.cover_downloaded.connect(self._player.update_track_cover)
+        self._telegram.track_reaction_updated.connect(self._main_view.update_track_reaction)
+        self._telegram.track_reaction_updated.connect(self._player.update_track_reaction)
 
         # System Tray
         self._tray = TrayService(self, self._player, self._config)
@@ -299,6 +303,12 @@ class MainWindow(QMainWindow):
     @Slot(Track)
     def _on_track_selected(self, track: Track) -> None:
         self._player.play_track(track)
+
+    @Slot()
+    def _on_player_like_clicked(self) -> None:
+        track = self._player.current_track
+        if track:
+            self._telegram.toggle_track_like(track)
 
     @Slot(str)
     def _on_auth_state_changed(self, state: str) -> None:

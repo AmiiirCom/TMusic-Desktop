@@ -28,7 +28,7 @@ def create_playerbar_cover_pixmap(
     scale = 2
     render_size = size * scale
     target = QPixmap(render_size, render_size)
-    target.fill(QColor(0, 0, 0, 0))
+    target.fill(Qt.GlobalColor.transparent)
 
     painter = QPainter(target)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -79,7 +79,7 @@ def create_playerbar_cover_pixmap(
 
 
 class PlayerBar(QFrame):
-    """Telegram Desktop styled bottom audio player bar with full reset support."""
+    """Telegram Desktop styled bottom audio player bar with full reset support and like reaction."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
@@ -90,6 +90,7 @@ class PlayerBar(QFrame):
     lyrics_clicked = Signal()
     track_info_clicked = Signal()
     track_label_clicked = Signal()  # Emitted when user clicks on cover or title
+    like_clicked = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,6 +135,17 @@ class PlayerBar(QFrame):
             }
             QPushButton#btnPlayPause:hover {
                 background-color: #1d72b8;
+            }
+            QPushButton#btnPlayerLike {
+                background: transparent;
+                border: none;
+                font-size: 16px;
+                border-radius: 16px;
+                min-width: 32px;
+                min-height: 32px;
+            }
+            QPushButton#btnPlayerLike:hover {
+                background-color: #242f3d;
             }
             QPushButton#btnSpeed {
                 background-color: #242f3d;
@@ -193,14 +205,14 @@ class PlayerBar(QFrame):
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(16)
 
-        # Left section: artwork and track info (clickable)
+        # Left section: artwork, track info, and like button (clickable)
         info_container = QWidget(self)
         self.info_container = info_container
         self.info_container.installEventFilter(self)
-        info_container.setFixedWidth(260)
+        info_container.setFixedWidth(280)
         info_layout = QHBoxLayout(info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
-        info_layout.setSpacing(12)
+        info_layout.setSpacing(10)
 
         self.artwork_badge = QLabel()
         self.artwork_badge.setFixedSize(48, 48)
@@ -219,8 +231,16 @@ class PlayerBar(QFrame):
         meta_layout.addWidget(self.title_label)
         meta_layout.addWidget(self.artist_label)
 
+        self.btn_like = QPushButton("🤍")
+        self.btn_like.setObjectName("btnPlayerLike")
+        self.btn_like.setFixedSize(34, 34)
+        self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_like.setEnabled(False)
+        self.btn_like.clicked.connect(self.like_clicked.emit)
+
         info_layout.addWidget(self.artwork_badge)
-        info_layout.addLayout(meta_layout)
+        info_layout.addLayout(meta_layout, stretch=1)
+        info_layout.addWidget(self.btn_like)
         layout.addWidget(info_container)
 
         # Middle section: controls + timeline
@@ -319,8 +339,11 @@ class PlayerBar(QFrame):
     def eventFilter(self, obj, event):
         """Capture mouse click on track info area (cover + title) to emit signal."""
         if obj == self.info_container and event.type() == QEvent.Type.MouseButtonPress:
-            self.track_label_clicked.emit()
-            return True
+            click_pos = event.position().toPoint()
+            # Do not trigger scroll if clicking directly on like button
+            if not self.btn_like.geometry().contains(click_pos):
+                self.track_label_clicked.emit()
+                return True
         return super().eventFilter(obj, event)
 
     def _open_speed_menu(self) -> None:
@@ -374,6 +397,8 @@ class PlayerBar(QFrame):
         self.dur_label.setText(track.formatted_duration)
         self.btn_info.setEnabled(True)
         self.btn_lyrics.setEnabled(False)
+        self.btn_like.setEnabled(True)
+        self.update_reaction(track.is_liked, track.heart_count)
         self.update_cover(self._cover_path)
 
     def reset_track(self) -> None:
@@ -389,7 +414,16 @@ class PlayerBar(QFrame):
         self.btn_play_pause.setText("▶")
         self.btn_lyrics.setEnabled(False)
         self.btn_info.setEnabled(False)
+        self.btn_like.setEnabled(False)
+        self.btn_like.setText("🤍")
+        self.btn_like.setToolTip("پسندیدن آهنگ (Like)")
         self.artwork_badge.setPixmap(create_playerbar_cover_pixmap(size=48))
+
+    def update_reaction(self, is_liked: bool, heart_count: int) -> None:
+        """Update like button visual icon and tooltip."""
+        self.btn_like.setText("❤️" if is_liked else "🤍")
+        tip = f"پسندیده‌اید ({heart_count})" if is_liked else "پسندیدن آهنگ (Like)"
+        self.btn_like.setToolTip(tip)
 
     def update_metadata(self, metadata: AudioMetadata) -> None:
         has_lyrics = metadata.has_lyrics

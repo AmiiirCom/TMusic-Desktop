@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -103,7 +103,6 @@ def create_connection_shield_pixmap(status: str = "ready", is_proxy: bool = Fals
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    # Base shield path
     shield_path = QPainterPath()
     shield_path.moveTo(size / 2, 2 * scale)
     shield_path.lineTo(size - (3 * scale), 5 * scale)
@@ -125,7 +124,7 @@ def create_connection_shield_pixmap(status: str = "ready", is_proxy: bool = Fals
         fill_color = QColor("#2481cc" if is_proxy else "#4fae4e")
         border_color = QColor(255, 255, 255, 180)
         badge_symbol = "✓" if is_proxy else "•"
-    else:  # connecting, waiting, or retrying (neutral slate/gray)
+    else:
         fill_color = QColor("#242f3d")
         border_color = QColor("#5d6e80")
         badge_symbol = "⋯"
@@ -134,7 +133,6 @@ def create_connection_shield_pixmap(status: str = "ready", is_proxy: bool = Fals
     painter.setPen(QPen(border_color, 1 * scale))
     painter.drawPath(shield_path)
 
-    # Draw inner symbol
     painter.setPen(QColor("#ffffff" if status == "ready" else "#7f91a4"))
     font = QFont("Segoe UI", 8 * scale, QFont.Weight.Bold)
     painter.setFont(font)
@@ -146,10 +144,11 @@ def create_connection_shield_pixmap(status: str = "ready", is_proxy: bool = Fals
 
 
 class MainView(QWidget):
-    """Telegram Desktop styled main dashboard view with non-clickable connection status shield."""
+    """Telegram Desktop styled main dashboard view with reactions and non-clickable connection status shield."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
+    track_like_toggled = Signal(Track)
     load_more_tracks_requested = Signal(object)
     settings_requested = Signal()
     search_full_requested = Signal(str, str)
@@ -378,6 +377,7 @@ class MainView(QWidget):
         # Page 1: Track List
         self.track_list = TrackListWidget(content_area)
         self.track_list.track_selected.connect(self.track_selected.emit)
+        self.track_list.track_like_toggled.connect(self.track_like_toggled.emit)
         self.track_list.load_more_requested.connect(self._on_load_more_tracks)
         self.track_list.search_requested.connect(self._on_search_requested)
         self.content_stack.addWidget(self.track_list)
@@ -499,6 +499,13 @@ class MainView(QWidget):
         self.track_list.update_track_cover(track_id, cover_path)
         if self.player_bar._current_track and self.player_bar._current_track.id == track_id:
             self.player_bar.update_cover(cover_path)
+
+    @Slot(object, object, bool, int)
+    def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
+        """Update reaction on track list and player bar in-place."""
+        self.track_list.update_track_reaction(chat_id, message_id, is_liked, heart_count)
+        if self.player_bar._current_track and self.player_bar._current_track.id == f"{chat_id}_{message_id}":
+            self.player_bar.update_reaction(is_liked, heart_count)
 
     def set_network_stats(self, speed_str: str, total_str: str) -> None:
         self.net_stats_label.setText(f"⚡ {speed_str} | سشن: {total_str}")

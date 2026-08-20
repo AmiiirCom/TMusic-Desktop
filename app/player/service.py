@@ -160,12 +160,48 @@ class PlayerService(QObject):
                     minithumbnail_data=t.minithumbnail_data,
                     cover_file_id=t.cover_file_id,
                     cover_path=cover_path,
+                    is_liked=t.is_liked,
+                    heart_count=t.heart_count,
                 )
                 self._playlist[idx] = updated
                 self._known_tracks[t.file_id] = updated
 
                 if self._current_track and self._current_track.id == track_id:
                     self._current_track = updated
+                break
+
+    @Slot(object, object, bool, int)
+    def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
+        """Update track reaction status in playlist and active playing track."""
+        track_id = f"{chat_id}_{message_id}"
+        for idx, t in enumerate(self._playlist):
+            if t.id == track_id:
+                updated = Track(
+                    id=t.id,
+                    chat_id=t.chat_id,
+                    message_id=t.message_id,
+                    file_id=t.file_id,
+                    title=t.title,
+                    artist=t.artist,
+                    duration_seconds=t.duration_seconds,
+                    size_bytes=t.size_bytes,
+                    file_name=t.file_name,
+                    mime_type=t.mime_type,
+                    local_path=t.local_path,
+                    is_downloaded=t.is_downloaded,
+                    date_timestamp=t.date_timestamp,
+                    minithumbnail_data=t.minithumbnail_data,
+                    cover_file_id=t.cover_file_id,
+                    cover_path=t.cover_path,
+                    is_liked=is_liked,
+                    heart_count=heart_count,
+                )
+                self._playlist[idx] = updated
+                self._known_tracks[t.file_id] = updated
+
+                if self._current_track and self._current_track.id == track_id:
+                    self._current_track = updated
+                    self.track_changed.emit(updated)
                 break
 
     def stop(self) -> None:

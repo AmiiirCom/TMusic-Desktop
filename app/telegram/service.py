@@ -54,6 +54,7 @@ class TelegramService(QObject):
     tracks_prepended = Signal(object, list)
     tracks_deleted = Signal(object, list)
     cover_downloaded = Signal(str, str)
+    track_reaction_updated = Signal(object, object, bool, int)  # chat_id, message_id, is_liked, count
 
     file_download_progress = Signal(int, int, int)
     file_download_completed = Signal(int, str)
@@ -79,6 +80,7 @@ class TelegramService(QObject):
         self._my_user_id: int = 0
         self._current_user: TelegramUser | None = None
         self._avatar_file_id: int = 0
+        self._current_opened_chat_id: int = 0
 
         # Periodic health check while connected (every 90s)
         self._health_check_timer = QTimer(self)
@@ -124,6 +126,7 @@ class TelegramService(QObject):
             on_delta_tracks_prepended=self.tracks_prepended.emit,
             on_tracks_deleted=self.tracks_deleted.emit,
             on_search_results=self.search_results_received.emit,
+            on_track_reaction_updated=self.track_reaction_updated.emit,
         )
 
         self._net_timer = QTimer(self)
@@ -202,6 +205,22 @@ class TelegramService(QObject):
         self._worker.start()
         logger.info("TelegramService started")
 
+    def _open_chat(self, chat_id: int) -> None:
+        """Open chat in TDLib to enable full reactions and interaction info synchronization."""
+        if self._current_opened_chat_id == chat_id:
+            return
+        if self._current_opened_chat_id != 0 and self._adapter.is_loaded:
+            try:
+                self._adapter.send({"@type": "closeChat", "chat_id": self._current_opened_chat_id})
+            except Exception:
+                pass
+        self._current_opened_chat_id = chat_id
+        if self._adapter.is_loaded:
+            try:
+                self._adapter.send({"@type": "openChat", "chat_id": chat_id})
+            except Exception:
+                pass
+
     def _poll_network_statistics(self) -> None:
         if self._adapter.is_loaded:
             self._adapter.send({
@@ -261,6 +280,20 @@ class TelegramService(QObject):
     def _handle_update(self, update: dict[str, Any]) -> None:
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
+
+        # Reaction response error fallback
+        if isinstance(extra, str) and extra.startswith("react_") and update_type == "error":
+            parts = extra.split("_")
+            if len(parts) >= 4:
+                try:
+                    err_chat_id = int(parts[1])
+                    err_msg_id = int(parts[2])
+                    attempted_liked = bool(int(parts[3]))
+                    logger.debug("Reaction request rejected by Telegram for message %d: %s", err_msg_id, update.get("message"))
+                    self._tracks.revert_track_reaction(err_chat_id, err_msg_id, not attempted_liked)
+                except Exception:
+                    pass
+            return
 
         # Network Stats
         if extra == "periodic_net_stats" and update_type == "networkStatistics":
@@ -362,6 +395,18 @@ class TelegramService(QObject):
                     message_ids = update.get("message_ids", [])
                     self._tracks.process_delete_messages(chat_id, message_ids)
 
+            case "updateMessageInteractionInfo":
+                chat_id = update.get("chat_id", 0)
+                msg_id = update.get("message_id", 0)
+                interaction_info = update.get("interaction_info")
+                self._tracks.process_interaction_info_update(chat_id, msg_id, interaction_info)
+
+            case "updateMessageReactions":
+                chat_id = update.get("chat_id", 0)
+                msg_id = update.get("message_id", 0)
+                reactions_obj = update.get("reactions")
+                self._tracks.process_reactions_update(chat_id, msg_id, reactions_obj)
+
             case "updateFile":
                 file_obj = update.get("file", {})
                 file_id = file_obj.get("id", 0)
@@ -430,6 +475,7 @@ class TelegramService(QObject):
                 transient_msgs = (
                     "There is not enough downloaded bytes",
                     "Failed to read the file",
+                    "The reaction isn't available",
                 )
                 if code != 404 and not any(t in msg for t in transient_msgs):
                     logger.warning("TDLib Error: %s (code: %s)", msg, code)
@@ -553,7 +599,20 @@ class TelegramService(QObject):
     def prefetch_cover_file(self, track_id: str, file_id: int) -> None:
         self._media.download_cover_file(track_id, file_id)
 
+    def toggle_track_like(self, track: Track) -> None:
+        """Optimistically toggle track like reaction and sync with Telegram."""
+        next_liked = not track.is_liked
+        next_count = max(0, track.heart_count + (1 if next_liked else -1))
+        # Ensure chat is marked open in TDLib
+        self._open_chat(track.chat_id)
+        # Emit optimistic UI signal
+        self.track_reaction_updated.emit(track.chat_id, track.message_id, next_liked, next_count)
+        # Dispatch to TDLib
+        self._tracks.toggle_track_like(track.chat_id, track.message_id, track.is_liked)
+
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
+        if reset:
+            self._open_chat(chat_id)
         self._tracks.load_chat_tracks(chat_id, reset=reset, chunk_size=chunk_size)
 
     def load_more_tracks(self, chat_id: int) -> None:

@@ -23,6 +23,8 @@ class Track:
     minithumbnail_data: bytes | None = None
     cover_file_id: int = 0
     cover_path: str | None = None
+    is_liked: bool = False
+    heart_count: int = 0
 
     @property
     def formatted_duration(self) -> str:

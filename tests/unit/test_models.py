@@ -5,9 +5,8 @@ from app.core.keywords import MusicKeyword, is_music_title
 from app.core.metadata import LYRICS_KEY_REGEX
 
 
-
 def test_track_formatting() -> None:
-    """Verify track durations, sizes, and fallback display titles."""
+    """Verify track durations, sizes, fallback display titles, and reaction status."""
     track = Track(
         id="100_50",
         chat_id=100,
@@ -18,12 +17,16 @@ def test_track_formatting() -> None:
         duration_seconds=269,  # 04:29
         size_bytes=8 * 1024 * 1024 + 500 * 1024,  # ~8.5 MB
         file_name="Coldplay_Yellow.mp3",
+        is_liked=True,
+        heart_count=12,
     )
 
     assert track.formatted_duration == "04:29"
     assert track.formatted_size == "8.5 MB"
     assert track.display_title == "Yellow"
     assert track.display_artist == "Coldplay"
+    assert track.is_liked is True
+    assert track.heart_count == 12
 
 
 def test_track_fallback_title_from_filename() -> None:
@@ -43,6 +46,8 @@ def test_track_fallback_title_from_filename() -> None:
     assert track.display_title == "My_Audio_Track"
     assert track.display_artist == "Unknown Artist"
     assert track.formatted_size == "500.0 KB"
+    assert track.is_liked is False
+    assert track.heart_count == 0
 
 
 def test_user_full_name() -> None:
@@ -62,6 +67,7 @@ def test_owned_chat_type_display() -> None:
     group = OwnedChat(id=200, title="Music Group", is_channel=False)
     assert group.type_display == "سوپرگروه"
 
+
 def test_music_keywords_multilingual_matching() -> None:
     """Verify multilingual support (Persian, English, Turkish, Russian, Spanish, etc.)."""
     # Persian
@@ -79,7 +85,8 @@ def test_music_keywords_multilingual_matching() -> None:
     assert is_music_title("اسناد و مدارک شرکت") is False
     assert is_music_title("گروه ترید و ارز دیجیتال") is False
     assert is_music_title("Family Backup Photos") is False
-    
+
+
 def test_lyrics_key_regex_patterns() -> None:
     """Verify that LYRICS_KEY_REGEX matches all required variations and rejects unrelated tags."""
     # Positive matches

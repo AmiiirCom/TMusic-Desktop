@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -93,7 +94,9 @@ def create_rounded_cover_pixmap(
 
 
 class TrackItemWidget(QWidget):
-    """Custom Telegram-styled track list item with dynamic in-place state updating."""
+    """Custom Telegram-styled track list item with like button and dynamic in-place state updating."""
+
+    like_clicked = Signal(Track)
 
     def __init__(self, track: Track, is_active: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -107,7 +110,7 @@ class TrackItemWidget(QWidget):
     def _init_ui(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 8, 14, 8)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
         self.cover_label = QLabel()
         self.cover_label.setFixedSize(44, 44)
@@ -122,6 +125,12 @@ class TrackItemWidget(QWidget):
 
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.artist_label)
+
+        # Telegram-styled Heart Like Button
+        self.btn_like = QPushButton()
+        self.btn_like.setFixedSize(32, 32)
+        self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_like.clicked.connect(self._on_like_clicked)
 
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
@@ -144,15 +153,77 @@ class TrackItemWidget(QWidget):
         layout.addWidget(self.cover_label)
         layout.addLayout(info_layout)
         layout.addStretch()
+        layout.addWidget(self.btn_like)
         layout.addLayout(meta_layout)
 
         self._apply_visual_state()
+        self._apply_like_state()
+
+    def _on_like_clicked(self) -> None:
+        self.like_clicked.emit(self.track)
 
     def set_active_state(self, is_active: bool) -> None:
         if self._is_active == is_active:
             return
         self._is_active = is_active
         self._apply_visual_state()
+
+    def update_reaction(self, is_liked: bool, heart_count: int) -> None:
+        """Update reaction icon and count in-place."""
+        self.track = Track(
+            id=self.track.id,
+            chat_id=self.track.chat_id,
+            message_id=self.track.message_id,
+            file_id=self.track.file_id,
+            title=self.track.title,
+            artist=self.track.artist,
+            duration_seconds=self.track.duration_seconds,
+            size_bytes=self.track.size_bytes,
+            file_name=self.track.file_name,
+            mime_type=self.track.mime_type,
+            local_path=self.track.local_path,
+            is_downloaded=self.track.is_downloaded,
+            date_timestamp=self.track.date_timestamp,
+            minithumbnail_data=self.track.minithumbnail_data,
+            cover_file_id=self.track.cover_file_id,
+            cover_path=self._cover_path,
+            is_liked=is_liked,
+            heart_count=heart_count,
+        )
+        self._apply_like_state()
+
+    def _apply_like_state(self) -> None:
+        if self.track.is_liked:
+            self.btn_like.setText("❤️")
+            tip = f"پسندیده‌اید ({self.track.heart_count})" if self.track.heart_count > 0 else "پسندیده‌اید"
+            self.btn_like.setToolTip(tip)
+            self.btn_like.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    border: none;
+                    font-size: 16px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(229, 57, 53, 0.15);
+                    border-radius: 16px;
+                }
+            """)
+        else:
+            self.btn_like.setText("🤍")
+            tip = f"پسندیدن ({self.track.heart_count})" if self.track.heart_count > 0 else "پسندیدن"
+            self.btn_like.setToolTip(tip)
+            self.btn_like.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    border: none;
+                    font-size: 15px;
+                    opacity: 0.7;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.1);
+                    border-radius: 16px;
+                }
+            """)
 
     def _apply_visual_state(self) -> None:
         if self._is_active:
@@ -188,7 +259,6 @@ class TrackItemWidget(QWidget):
     def update_cover(self, cover_path: str | None) -> None:
         if cover_path:
             self._cover_path = cover_path
-            # Synchronize internal track instance with downloaded cover
             if self.track.cover_path != cover_path:
                 self.track = Track(
                     id=self.track.id,
@@ -207,6 +277,8 @@ class TrackItemWidget(QWidget):
                     minithumbnail_data=self.track.minithumbnail_data,
                     cover_file_id=self.track.cover_file_id,
                     cover_path=cover_path,
+                    is_liked=self.track.is_liked,
+                    heart_count=self.track.heart_count,
                 )
 
         pixmap = create_rounded_cover_pixmap(
@@ -219,9 +291,10 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget with in-place highlight switching (zero scroll jumping)."""
+    """List widget with in-place highlight switching and real-time reaction updates."""
 
     track_selected = Signal(Track)
+    track_like_toggled = Signal(Track)
     load_more_requested = Signal()
     search_requested = Signal(str)
 
@@ -276,10 +349,6 @@ class TrackListWidget(QListWidget):
     def contextMenuEvent(self, event: Any) -> None:
         event.ignore()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def set_tracks(self, tracks: list[Track], has_more: bool = True) -> None:
         self._all_tracks = list(tracks)
         self._has_more = has_more
@@ -299,6 +368,7 @@ class TrackListWidget(QListWidget):
                 item = QListWidgetItem(self)
                 is_active = track.id == self._active_track_id
                 widget = TrackItemWidget(track, is_active=is_active)
+                widget.like_clicked.connect(self.track_like_toggled.emit)
                 item.setSizeHint(widget.sizeHint())
                 self.addItem(item)
                 self.setItemWidget(item, widget)
@@ -319,6 +389,7 @@ class TrackListWidget(QListWidget):
                 item = QListWidgetItem()
                 is_active = track.id == self._active_track_id
                 widget = TrackItemWidget(track, is_active=is_active)
+                widget.like_clicked.connect(self.track_like_toggled.emit)
                 item.setSizeHint(widget.sizeHint())
                 self.insertItem(idx, item)
                 self.setItemWidget(item, widget)
@@ -338,6 +409,37 @@ class TrackListWidget(QListWidget):
                     if self.itemWidget(item) == widget:
                         self.takeItem(i)
                         break
+
+    def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
+        """In-place update of reaction state without resetting scroll position."""
+        track_id = f"{chat_id}_{message_id}"
+        for idx, t in enumerate(self._all_tracks):
+            if t.id == track_id:
+                self._all_tracks[idx] = Track(
+                    id=t.id,
+                    chat_id=t.chat_id,
+                    message_id=t.message_id,
+                    file_id=t.file_id,
+                    title=t.title,
+                    artist=t.artist,
+                    duration_seconds=t.duration_seconds,
+                    size_bytes=t.size_bytes,
+                    file_name=t.file_name,
+                    mime_type=t.mime_type,
+                    local_path=t.local_path,
+                    is_downloaded=t.is_downloaded,
+                    date_timestamp=t.date_timestamp,
+                    minithumbnail_data=t.minithumbnail_data,
+                    cover_file_id=t.cover_file_id,
+                    cover_path=t.cover_path,
+                    is_liked=is_liked,
+                    heart_count=heart_count,
+                )
+                break
+
+        widget = self._track_widgets.get(track_id)
+        if widget:
+            widget.update_reaction(is_liked, heart_count)
 
     def update_track_cover(self, track_id: str, cover_path: str) -> None:
         for idx, t in enumerate(self._all_tracks):
@@ -359,6 +461,8 @@ class TrackListWidget(QListWidget):
                     minithumbnail_data=t.minithumbnail_data,
                     cover_file_id=t.cover_file_id,
                     cover_path=cover_path,
+                    is_liked=t.is_liked,
+                    heart_count=t.heart_count,
                 )
                 break
 
@@ -395,10 +499,6 @@ class TrackListWidget(QListWidget):
             self._populate(filtered)
         self.search_requested.emit(query.strip())
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
     def _populate(self, tracks: list[Track]) -> None:
         self.clear()
         self._track_widgets.clear()
@@ -406,6 +506,7 @@ class TrackListWidget(QListWidget):
             item = QListWidgetItem(self)
             is_active = track.id == self._active_track_id
             widget = TrackItemWidget(track, is_active=is_active)
+            widget.like_clicked.connect(self.track_like_toggled.emit)
             item.setSizeHint(widget.sizeHint())
             self.addItem(item)
             self.setItemWidget(item, widget)
