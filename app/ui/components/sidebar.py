@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from app.models.chat import OwnedChat
 from app.models.user import TelegramUser
 from app.ui.components.chat_list_widget import OwnedChatListWidget
+from app.ui.utils.icons import get_svg_icon
 from app.ui.utils.pixmaps import create_circular_avatar_pixmap, create_connection_shield_pixmap
 
 
@@ -54,7 +55,7 @@ class SidebarWidget(QWidget):
                 color: #6ab3f3;
                 font-size: 12px;
                 font-weight: bold;
-                padding: 6px 12px;
+                padding: 6px 10px;
                 border-radius: 6px;
                 border: 1px solid #2f3e50;
             }
@@ -77,8 +78,11 @@ class SidebarWidget(QWidget):
         self.user_name_label = QLabel(self.tr("Telegram User"))
         self.user_name_label.setObjectName("userName")
 
-        btn_settings = QPushButton(self.tr("Settings"))
+        btn_settings = QPushButton()
         btn_settings.setObjectName("btnHeaderAction")
+        btn_settings.setIcon(get_svg_icon("settings", "#6ab3f3", 16))
+        btn_settings.setIconSize(QSize(16, 16))
+        btn_settings.setToolTip(self.tr("Settings"))
         btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_settings.clicked.connect(self.settings_requested.emit)
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Any
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.models.track import Track
+from app.ui.utils.icons import get_svg_icon
 
 
 def create_rounded_cover_pixmap(
@@ -104,7 +105,7 @@ class TrackItemWidget(QWidget):
         self._is_active = is_active
         self._cover_path: str | None = track.cover_path
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -128,12 +129,13 @@ class TrackItemWidget(QWidget):
 
         self.btn_like = QPushButton()
         self.btn_like.setFixedSize(32, 32)
+        self.btn_like.setIconSize(QSize(16, 16))
         self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_like.clicked.connect(self._on_like_clicked)
 
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(2)
-        meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        meta_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
         self.duration_label = QLabel(self.track.formatted_duration)
         self.duration_label.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
@@ -192,14 +194,13 @@ class TrackItemWidget(QWidget):
 
     def _apply_like_state(self) -> None:
         if self.track.is_liked:
-            self.btn_like.setText("❤️")
-            tip = f"پسندیده‌اید ({self.track.heart_count})" if self.track.heart_count > 0 else "پسندیده‌اید"
+            self.btn_like.setIcon(get_svg_icon("heart_filled", "#e53935", 16))
+            tip = f"{self.tr('Liked')} ({self.track.heart_count})" if self.track.heart_count > 0 else self.tr("Liked")
             self.btn_like.setToolTip(tip)
             self.btn_like.setStyleSheet("""
                 QPushButton {
                     background: transparent;
                     border: none;
-                    font-size: 16px;
                 }
                 QPushButton:hover {
                     background-color: rgba(229, 57, 53, 0.15);
@@ -207,15 +208,13 @@ class TrackItemWidget(QWidget):
                 }
             """)
         else:
-            self.btn_like.setText("🤍")
-            tip = f"پسندیدن ({self.track.heart_count})" if self.track.heart_count > 0 else "پسندیدن"
+            self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 16))
+            tip = f"{self.tr('Like')} ({self.track.heart_count})" if self.track.heart_count > 0 else self.tr("Like")
             self.btn_like.setToolTip(tip)
             self.btn_like.setStyleSheet("""
                 QPushButton {
                     background: transparent;
                     border: none;
-                    font-size: 15px;
-                    opacity: 0.7;
                 }
                 QPushButton:hover {
                     background-color: rgba(255, 255, 255, 0.1);
@@ -298,7 +297,7 @@ class TrackListWidget(QListWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._all_tracks: list[Track] = []
         self._track_widgets: dict[str, TrackItemWidget] = {}
         self._active_track_id: str | None = None
@@ -398,7 +397,6 @@ class TrackListWidget(QListWidget):
             self.filter_tracks(self._current_query)
 
     def remove_tracks(self, deleted_track_ids: list[str]) -> None:
-        """Completely detach and destroy widgets for deleted tracks."""
         del_set = set(deleted_track_ids)
         self._all_tracks = [t for t in self._all_tracks if t.id not in del_set]
 
@@ -420,7 +418,6 @@ class TrackListWidget(QListWidget):
         self.viewport().update()
 
     def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
-        """In-place update of reaction state without resetting scroll position."""
         track_id = f"{chat_id}_{message_id}"
         for idx, t in enumerate(self._all_tracks):
             if t.id == track_id:

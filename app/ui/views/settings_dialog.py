@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -17,11 +17,12 @@ from PySide6.QtWidgets import (
 from app.cache.service import CacheManager
 from app.config import AppConfig
 from app.settings.service import ProxySettings, SettingsService, detect_system_proxy
+from app.ui.utils.icons import get_svg_icon
 from app.ui.views.base_modal import BaseModalDialog
 
 
 class SettingsDialog(BaseModalDialog):
-    """Clean, well-proportioned Settings, Proxy, and Storage management modal."""
+    """Clean, well-proportioned Settings, Proxy, and Storage management modal with SVG icons."""
 
     cache_cleared = Signal()
     proxy_saved = Signal(object)
@@ -48,7 +49,6 @@ class SettingsDialog(BaseModalDialog):
         proxy_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(proxy_title)
 
-        # Mode Selection
         self.proxy_mode_combo = QComboBox()
         self.proxy_mode_combo.addItem(self.tr("Direct Connection"), "DIRECT")
         self.proxy_mode_combo.addItem(self.tr("System Proxy"), "SYSTEM")
@@ -64,13 +64,11 @@ class SettingsDialog(BaseModalDialog):
         self.proxy_mode_combo.currentIndexChanged.connect(self._on_proxy_mode_changed)
         self.body_layout.addWidget(self.proxy_mode_combo)
 
-        # Status Hint
         self.proxy_status_hint = QLabel()
         self.proxy_status_hint.setWordWrap(True)
         self.proxy_status_hint.setStyleSheet("font-size: 11px; color: #7f91a4; margin: 2px 0;")
         self.body_layout.addWidget(self.proxy_status_hint)
 
-        # Manual Form Frame
         self.manual_proxy_frame = QFrame()
         form = QFormLayout(self.manual_proxy_frame)
         form.setContentsMargins(0, 4, 0, 4)
@@ -150,6 +148,8 @@ class SettingsDialog(BaseModalDialog):
         self.body_layout.addWidget(path_label)
 
         btn_open_folder = QPushButton(self.tr("Open Downloads Folder"))
+        btn_open_folder.setIcon(get_svg_icon("folder", "#6ab3f3", 16))
+        btn_open_folder.setIconSize(QSize(16, 16))
         btn_open_folder.setStyleSheet("background-color: #242f3d; border: 1px solid #2f3e50;")
         btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_open_folder.clicked.connect(self._on_open_downloads_folder)
@@ -178,6 +178,8 @@ class SettingsDialog(BaseModalDialog):
         downloads_info_layout.addWidget(self.downloads_size_val)
 
         btn_clear = QPushButton(self.tr("Clear Cache"))
+        btn_clear.setIcon(get_svg_icon("trash", "#e53935", 16))
+        btn_clear.setIconSize(QSize(16, 16))
         btn_clear.setStyleSheet("background-color: #242f3d; color: #e53935; border: 1px solid #3b242d;")
         btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_clear.clicked.connect(self._on_clear_cache)
@@ -194,6 +196,8 @@ class SettingsDialog(BaseModalDialog):
         self.body_layout.addWidget(sep2)
 
         btn_logout = QPushButton(self.tr("Log Out of Telegram"))
+        btn_logout.setIcon(get_svg_icon("logout", "#ffffff", 16))
+        btn_logout.setIconSize(QSize(16, 16))
         btn_logout.setStyleSheet("background-color: #e53935; font-weight: bold; padding: 10px;")
         btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_logout.clicked.connect(self._on_logout_clicked)

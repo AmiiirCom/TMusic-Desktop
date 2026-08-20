@@ -1,5 +1,5 @@
 from typing import Any
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QDialog,
@@ -11,24 +11,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.utils.icons import get_svg_icon
+
 
 class BaseModalDialog(QDialog):
-    """
-    Full-window modal backdrop dialog with 100% guaranteed outside-click dismiss.
-    """
+    """Full-window modal backdrop dialog with vector SVG close button."""
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
-        # Full-window container layout centering the card
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Main Card Frame
         self.card_frame = QFrame(self)
         self.card_frame.setObjectName("modalCardFrame")
         self.card_frame.setStyleSheet("""
@@ -39,7 +37,7 @@ class BaseModalDialog(QDialog):
             }
             QLabel {
                 color: #ffffff;
-                font-family: 'Vazirmatn', 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', 'Vazirmatn', sans-serif;
             }
             QLineEdit, QComboBox {
                 padding: 8px 12px;
@@ -66,9 +64,6 @@ class BaseModalDialog(QDialog):
             QPushButton:hover { background-color: #1d72b8; }
             QPushButton#modalCloseBtn {
                 background: transparent;
-                color: #7f91a4;
-                font-size: 16px;
-                font-weight: bold;
                 border-radius: 14px;
                 min-width: 28px;
                 min-height: 28px;
@@ -79,7 +74,6 @@ class BaseModalDialog(QDialog):
             }
             QPushButton#modalCloseBtn:hover {
                 background-color: #e53935;
-                color: #ffffff;
             }
         """)
 
@@ -87,7 +81,7 @@ class BaseModalDialog(QDialog):
         card_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.setSpacing(0)
 
-        # 1. Topbar (Title + Close ✕)
+        # Header Bar
         self.header_bar = QFrame(self.card_frame)
         self.header_bar.setFixedHeight(50)
         self.header_bar.setStyleSheet("border-bottom: 1px solid #242f3d;")
@@ -97,9 +91,11 @@ class BaseModalDialog(QDialog):
         self.modal_title = QLabel(title)
         self.modal_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #6ab3f3;")
 
-        self.btn_close_modal = QPushButton("✕")
+        self.btn_close_modal = QPushButton()
         self.btn_close_modal.setObjectName("modalCloseBtn")
-        self.btn_close_modal.setToolTip("بستن (Esc)")
+        self.btn_close_modal.setIcon(get_svg_icon("close", "#7f91a4", 16))
+        self.btn_close_modal.setIconSize(QSize(16, 16))
+        self.btn_close_modal.setToolTip(self.tr("Close"))
         self.btn_close_modal.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_close_modal.clicked.connect(self.reject)
 
@@ -108,7 +104,7 @@ class BaseModalDialog(QDialog):
         header_layout.addWidget(self.btn_close_modal)
         card_layout.addWidget(self.header_bar)
 
-        # 2. Body Container
+        # Body Container
         self.content_widget = QWidget(self.card_frame)
         self.body_layout = QVBoxLayout(self.content_widget)
         self.body_layout.setContentsMargins(20, 16, 20, 20)
@@ -118,14 +114,12 @@ class BaseModalDialog(QDialog):
         root_layout.addWidget(self.card_frame)
 
     def paintEvent(self, event: Any) -> None:
-        """Render smooth dark backdrop covering the parent window."""
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 160))
         painter.end()
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
-        # Position dialog to cover exact global area of MainWindow
         parent = self.parentWidget()
         if parent:
             p_win = parent.window()
@@ -133,7 +127,6 @@ class BaseModalDialog(QDialog):
             self.setGeometry(g_pos.x(), g_pos.y(), p_win.width(), p_win.height())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Dismiss dialog immediately when clicking outside the card container."""
         click_pos = event.position().toPoint()
         if not self.card_frame.geometry().contains(click_pos):
             self.reject()

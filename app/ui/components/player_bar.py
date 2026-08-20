@@ -1,4 +1,4 @@
-from PySide6.QtCore import QEvent, QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -15,11 +15,12 @@ from app.config import AppConfig
 from app.core.metadata import AudioMetadata
 from app.models.track import Track
 from app.ui.components.player_controls import SPEED_OPTIONS, PlayerControls
+from app.ui.utils.icons import get_svg_icon, get_svg_pixmap
 from app.ui.utils.pixmaps import create_rounded_cover_pixmap
 
 
 class PlayerBar(QFrame):
-    """Bottom audio player bar with track info, playback controls, and sound adjustments."""
+    """Bottom audio player bar with track info, playback controls, and SVG sound adjustments."""
 
     play_pause_clicked = Signal()
     next_clicked = Signal()
@@ -56,15 +57,13 @@ class PlayerBar(QFrame):
                 background: transparent;
                 border: none;
                 color: #ffffff;
-                font-size: 16px;
+                font-size: 14px;
                 padding: 4px;
                 border-radius: 18px;
             }
             QPushButton:hover { background-color: #242f3d; }
             QPushButton#btnPlayPause {
                 background-color: #2481cc;
-                font-size: 18px;
-                font-weight: bold;
                 min-width: 38px;
                 min-height: 38px;
                 border-radius: 19px;
@@ -73,7 +72,6 @@ class PlayerBar(QFrame):
             QPushButton#btnPlayerLike {
                 background: transparent;
                 border: none;
-                font-size: 16px;
                 border-radius: 16px;
                 min-width: 32px;
                 min-height: 32px;
@@ -160,9 +158,11 @@ class PlayerBar(QFrame):
         meta_layout.addWidget(self.title_label)
         meta_layout.addWidget(self.artist_label)
 
-        self.btn_like = QPushButton("🤍")
+        self.btn_like = QPushButton()
         self.btn_like.setObjectName("btnPlayerLike")
         self.btn_like.setFixedSize(34, 34)
+        self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 18))
+        self.btn_like.setIconSize(QSize(18, 18))
         self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_like.setEnabled(False)
         self.btn_like.clicked.connect(self.like_clicked.emit)
@@ -186,12 +186,16 @@ class PlayerBar(QFrame):
 
         self.btn_lyrics = QPushButton(self.tr("Lyrics"))
         self.btn_lyrics.setObjectName("btnLyrics")
+        self.btn_lyrics.setIcon(get_svg_icon("lyrics", "#6ab3f3", 16))
+        self.btn_lyrics.setIconSize(QSize(16, 16))
         self.btn_lyrics.setEnabled(False)
         self.btn_lyrics.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lyrics.clicked.connect(self.lyrics_clicked.emit)
 
         self.btn_info = QPushButton(self.tr("Info"))
         self.btn_info.setObjectName("btnInfo")
+        self.btn_info.setIcon(get_svg_icon("info", "#7f91a4", 16))
+        self.btn_info.setIconSize(QSize(16, 16))
         self.btn_info.setEnabled(False)
         self.btn_info.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_info.clicked.connect(self.track_info_clicked.emit)
@@ -201,8 +205,10 @@ class PlayerBar(QFrame):
         self.btn_speed.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_speed.clicked.connect(self._open_speed_menu)
 
-        vol_icon = QLabel("Vol")
-        vol_icon.setStyleSheet("color: #7f91a4; font-size: 11px; font-weight: bold;")
+        vol_icon = QLabel()
+        vol_icon.setFixedSize(18, 18)
+        vol_icon.setPixmap(get_svg_pixmap("volume", "#7f91a4", 18))
+
         self.vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(80)
@@ -286,11 +292,14 @@ class PlayerBar(QFrame):
         self.btn_lyrics.setEnabled(False)
         self.btn_info.setEnabled(False)
         self.btn_like.setEnabled(False)
-        self.btn_like.setText("🤍")
+        self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 18))
         self.artwork_badge.setPixmap(create_rounded_cover_pixmap(size=48))
 
     def update_reaction(self, is_liked: bool, heart_count: int) -> None:
-        self.btn_like.setText("❤️" if is_liked else "🤍")
+        if is_liked:
+            self.btn_like.setIcon(get_svg_icon("heart_filled", "#e53935", 18))
+        else:
+            self.btn_like.setIcon(get_svg_icon("heart_outline", "#7f91a4", 18))
         tip = self.tr("Liked") if is_liked else self.tr("Like")
         self.btn_like.setToolTip(tip)
 

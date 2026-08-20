@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -9,11 +9,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.utils.icons import get_svg_icon
 from app.ui.views.base_modal import BaseModalDialog
 
 
 class LyricsDialog(BaseModalDialog):
-    """Frameless unified modal displaying song lyrics."""
+    """Frameless unified modal displaying song lyrics with SVG copy action."""
 
     def __init__(self, title: str, artist: str, lyrics: str, parent: QWidget | None = None) -> None:
         super().__init__(title="Lyrics", parent=parent)
@@ -57,6 +58,8 @@ class LyricsDialog(BaseModalDialog):
         # Action Button
         btn_layout = QHBoxLayout()
         self.btn_copy = QPushButton(self.tr("Copy Lyrics"))
+        self.btn_copy.setIcon(get_svg_icon("copy", "#6ab3f3", 16))
+        self.btn_copy.setIconSize(QSize(16, 16))
         self.btn_copy.setStyleSheet("background-color: #242f3d; color: #6ab3f3; border: 1px solid #2f3e50;")
         self.btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_copy.clicked.connect(self._on_copy_lyrics)
@@ -68,3 +71,4 @@ class LyricsDialog(BaseModalDialog):
     def _on_copy_lyrics(self) -> None:
         QApplication.clipboard().setText(self._lyrics)
         self.btn_copy.setText(self.tr("Copied"))
+        self.btn_copy.setIcon(get_svg_icon("check", "#4fae4e", 16))
