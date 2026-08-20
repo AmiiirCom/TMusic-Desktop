@@ -114,6 +114,7 @@ class TelegramService(QObject):
             on_track_reaction_updated=self._on_track_reaction_updated,
         )
 
+        # Initialize network statistics polling timer (1s interval)
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
@@ -135,11 +136,9 @@ class TelegramService(QObject):
             })
 
     def set_network_monitor_active(self, is_active: bool) -> None:
-        if is_active:
-            if not self._net_timer.isActive():
-                self._net_timer.start()
-        elif not self._media.has_active_downloads:
-            self._net_timer.stop()
+        """Control network monitor timer without breaking background metering."""
+        if is_active and not self._net_timer.isActive():
+            self._net_timer.start()
 
     def load_cached_state(self) -> None:
         self._chats.load_cached_chats()
@@ -177,7 +176,12 @@ class TelegramService(QObject):
         self._worker = TDLibWorker(self._adapter)
         self._worker.update_received.connect(self._handle_update)
         self._worker.start()
-        logger.info("TelegramService worker started")
+
+        # Start continuous network traffic monitoring from the first second of launch
+        self._net_timer.start()
+        self._poll_network_statistics()
+
+        logger.info("TelegramService worker and Network Monitor started.")
 
     def _open_chat(self, chat_id: int) -> None:
         if chat_id == FAVORITES_CHAT_ID:
@@ -313,7 +317,7 @@ class TelegramService(QObject):
                         "@extra": f"fetch_liked_msg_{chat_id}_{message_id}",
                     })
         else:
-            # Unliked on Telegram: remove from storage AND emit deletion signal immediately
+            # Unliked on Telegram: remove from storage and emit deletion signal
             if self._settings:
                 self._settings.remove_liked_track(track_id)
             self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track_id])
@@ -413,7 +417,6 @@ class TelegramService(QObject):
             is_initial = parts[3] == "initial"
             if update_type in ("foundChatMessages", "messages"):
                 messages = update.get("messages", [])
-                # Trigger live interaction refresh
                 msg_ids = [m["id"] for m in messages if isinstance(m, dict) and "id" in m]
                 if msg_ids and self._adapter.is_loaded:
                     self._adapter.send({
@@ -562,11 +565,9 @@ class TelegramService(QObject):
         self._auth.send_password(password)
 
     def download_file(self, file_id: int) -> None:
-        self.set_network_monitor_active(True)
         self._media.download_audio_file(file_id)
 
     def prefetch_audio_file(self, file_id: int) -> None:
-        self.set_network_monitor_active(True)
         self._media.prefetch_audio_file(file_id)
 
     def prefetch_cover_file(self, track_id: str, file_id: int) -> None:
@@ -611,10 +612,8 @@ class TelegramService(QObject):
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
         if chat_id == FAVORITES_CHAT_ID:
-            # 1. Immediately emit current cached favorites with zero UI lag
             liked_tracks = self._settings.get_liked_tracks() if self._settings else []
             self.tracks_loaded.emit(FAVORITES_CHAT_ID, liked_tracks, False)
-            # 2. Fast background deep-sync across full history from Telegram servers
             self.sync_favorites_from_telegram()
             return
 

@@ -24,7 +24,7 @@ def format_speed(bytes_per_sec: int) -> str:
 class NetworkMeter(QObject):
     """
     Precision network traffic meter tracking total session usage
-    and live real-time bandwidth speeds from TDLib network stats.
+    and live real-time bandwidth speeds from TDLib network stats from the moment of launch.
     """
 
     stats_updated = Signal(str, str)  # (live_speed_str, session_usage_str)
@@ -42,16 +42,18 @@ class NetworkMeter(QObject):
 
     def update_network_stats(self, total_rx_bytes: int, total_tx_bytes: int) -> None:
         """Process absolute network counters received from TDLib."""
-        # Record baseline on application startup / first reading
+        # Record baseline on the very first reading at startup
         if not self._is_initialized:
             self._is_initialized = True
             self._initial_rx = total_rx_bytes
             self._initial_tx = total_tx_bytes
             self._last_rx = total_rx_bytes
             self._last_tx = total_tx_bytes
+            self.stats_updated.emit("0 KB/s", "0 B")
+            self.full_stats_updated.emit("0 KB/s", "0 B", "0 B")
             return
 
-        # Calculate session delta (data consumed since application started)
+        # Calculate session delta (total data consumed since application launched)
         self._session_rx = max(0, total_rx_bytes - self._initial_rx)
         self._session_tx = max(0, total_tx_bytes - self._initial_tx)
 
