@@ -93,7 +93,7 @@ class SettingsService:
     # ------------------------------------------------------------------
 
     def get_liked_tracks(self) -> list[Track]:
-        """Retrieve all persisted liked tracks as domain objects."""
+        """Retrieve all persisted liked tracks in their exact stable order."""
         results: list[Track] = []
         for item in self._preferences.liked_tracks:
             try:
@@ -127,8 +127,12 @@ class SettingsService:
                 logger.debug("Error deserializing liked track: %s", exc)
         return results
 
-    def save_liked_track(self, track: Track) -> None:
-        """Register or update a liked track in persistent storage."""
+    def save_liked_track(self, track: Track) -> bool:
+        """
+        Register or update a liked track.
+        Maintains strict position stability if already present.
+        Returns True if newly added, False if updated in-place.
+        """
         minithumb_str = (
             base64.b64encode(track.minithumbnail_data).decode("ascii")
             if track.minithumbnail_data
@@ -155,11 +159,22 @@ class SettingsService:
             "heart_count": track.heart_count,
         }
 
-        # Replace existing or prepend to maintain reverse-chronological order
-        updated_list = [t for t in self._preferences.liked_tracks if t.get("id") != track.id]
-        updated_list.insert(0, track_dict)
-        self._preferences.liked_tracks = updated_list
-        self.save()
+        # Check if track already exists to preserve stable order and cover_path
+        existing_idx = next(
+            (i for i, t in enumerate(self._preferences.liked_tracks) if t.get("id") == track.id),
+            None,
+        )
+        if existing_idx is not None:
+            old_cover = self._preferences.liked_tracks[existing_idx].get("cover_path")
+            if old_cover and not track_dict.get("cover_path"):
+                track_dict["cover_path"] = old_cover
+            self._preferences.liked_tracks[existing_idx] = track_dict
+            self.save()
+            return False
+        else:
+            self._preferences.liked_tracks.insert(0, track_dict)
+            self.save()
+            return True
 
     def remove_liked_track(self, track_id: str) -> None:
         """Remove an unliked track from persistent storage."""
@@ -169,7 +184,7 @@ class SettingsService:
         self.save()
 
     def update_liked_track_cover(self, track_id: str, cover_path: str) -> None:
-        """Update cover path for a liked track in persistent storage."""
+        """Update cover path for a liked track in persistent storage without reordering."""
         for t in self._preferences.liked_tracks:
             if t.get("id") == track_id:
                 t["cover_path"] = cover_path

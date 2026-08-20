@@ -110,14 +110,20 @@ class TelegramService(QObject):
             on_lazy_chunk_appended=self._on_lazy_tracks_appended,
             on_delta_tracks_prepended=self._on_delta_tracks_prepended,
             on_tracks_deleted=self.tracks_deleted.emit,
-            on_search_results=self.search_results_received.emit,
+            on_search_results=self._on_search_results_received,
             on_track_reaction_updated=self._on_track_reaction_updated,
         )
 
-        # Initialize network statistics polling timer (1s interval)
+        # Continuous background network traffic monitor
         self._net_timer = QTimer(self)
         self._net_timer.setInterval(1000)
         self._net_timer.timeout.connect(self._poll_network_statistics)
+
+        # Universal smooth progressive cover loading queue (applied across all playlists)
+        self._cover_queue: list[tuple[str, int]] = []
+        self._cover_timer = QTimer(self)
+        self._cover_timer.setInterval(60)  # Smooth 60ms cascade interval
+        self._cover_timer.timeout.connect(self._process_next_cover)
 
     @property
     def current_user(self) -> TelegramUser | None:
@@ -136,7 +142,6 @@ class TelegramService(QObject):
             })
 
     def set_network_monitor_active(self, is_active: bool) -> None:
-        """Control network monitor timer without breaking background metering."""
         if is_active and not self._net_timer.isActive():
             self._net_timer.start()
 
@@ -177,13 +182,14 @@ class TelegramService(QObject):
         self._worker.update_received.connect(self._handle_update)
         self._worker.start()
 
-        # Start continuous network traffic monitoring from the first second of launch
         self._net_timer.start()
         self._poll_network_statistics()
 
         logger.info("TelegramService worker and Network Monitor started.")
 
     def _open_chat(self, chat_id: int) -> None:
+        self._clear_cover_queue()
+
         if chat_id == FAVORITES_CHAT_ID:
             return
 
@@ -219,14 +225,23 @@ class TelegramService(QObject):
     def _on_initial_tracks_loaded(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
         self._sync_liked_tracks_from_list(tracks)
         self.tracks_loaded.emit(chat_id, tracks, has_more)
+        # Start smooth 1-by-1 cover cascade for initial batch
+        self._start_staggered_covers(tracks, clear_existing=True)
 
     def _on_lazy_tracks_appended(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
         self._sync_liked_tracks_from_list(tracks)
         self.tracks_appended.emit(chat_id, tracks, has_more)
+        # Append scroll pagination chunk to the ongoing smooth cover cascade
+        self._start_staggered_covers(tracks, clear_existing=False)
 
     def _on_delta_tracks_prepended(self, chat_id: int, tracks: list[Track]) -> None:
         self._sync_liked_tracks_from_list(tracks)
         self.tracks_prepended.emit(chat_id, tracks)
+        self._start_staggered_covers(tracks, clear_existing=False)
+
+    def _on_search_results_received(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
+        self.search_results_received.emit(chat_id, tracks, has_more)
+        self._start_staggered_covers(tracks, clear_existing=True)
 
     def _on_cover_completed(self, track_id: str, cover_path: str) -> None:
         if self._settings:
@@ -236,6 +251,61 @@ class TelegramService(QObject):
     def _on_owned_chats_loaded(self, chats: list[OwnedChat]) -> None:
         self.owned_chats_loaded.emit(chats)
         self.sync_favorites_from_telegram()
+
+    def _start_staggered_covers(self, tracks: list[Track], clear_existing: bool = True) -> None:
+        """
+        Universal staggered cover art loader: enqueues tracks and smoothly
+        cascades HD cover downloads 1-by-1 across all chats and pagination chunks.
+        """
+        if clear_existing:
+            self._cover_queue.clear()
+
+        new_entries = [
+            (t.id, t.cover_file_id)
+            for t in tracks
+            if t.cover_file_id > 0 and not (t.cover_path and Path(t.cover_path).exists())
+        ]
+        self._cover_queue.extend(new_entries)
+
+        if self._cover_queue and not self._cover_timer.isActive():
+            self._cover_timer.start()
+
+    def _process_next_cover(self) -> None:
+        """Pop and fetch one cover from queue at each timer interval."""
+        if not self._cover_queue:
+            self._cover_timer.stop()
+            return
+
+        track_id, cover_file_id = self._cover_queue.pop(0)
+        self._media.download_cover_file(track_id, cover_file_id)
+
+    def _clear_cover_queue(self) -> None:
+        self._cover_timer.stop()
+        self._cover_queue.clear()
+
+    @staticmethod
+    def _clone_track_lightweight(t: Track) -> Track:
+        """Create a lightweight track copy for smooth initial rendering."""
+        return Track(
+            id=t.id,
+            chat_id=t.chat_id,
+            message_id=t.message_id,
+            file_id=t.file_id,
+            title=t.title,
+            artist=t.artist,
+            duration_seconds=t.duration_seconds,
+            size_bytes=t.size_bytes,
+            file_name=t.file_name,
+            mime_type=t.mime_type,
+            local_path=t.local_path,
+            is_downloaded=t.is_downloaded,
+            date_timestamp=t.date_timestamp,
+            minithumbnail_data=t.minithumbnail_data,
+            cover_file_id=t.cover_file_id,
+            cover_path=None,
+            is_liked=t.is_liked,
+            heart_count=t.heart_count,
+        )
 
     def sync_favorites_from_telegram(self) -> None:
         """Fetch and deeply sync liked audio tracks across owned music chats with full reaction verification."""
@@ -264,7 +334,6 @@ class TelegramService(QObject):
         if not self._adapter.is_loaded:
             return
 
-        # Ensure TDLib knows the chat context to fetch interactions
         self._adapter.send({"@type": "openChat", "chat_id": chat_id})
 
         self._adapter.send({
@@ -308,6 +377,10 @@ class TelegramService(QObject):
                 if self._settings:
                     self._settings.save_liked_track(updated_track)
                 self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
+
+                # Fetch HD cover for newly liked track
+                if updated_track.cover_file_id > 0 and not updated_track.cover_path:
+                    self._media.download_cover_file(updated_track.id, updated_track.cover_file_id)
             else:
                 if self._adapter.is_loaded:
                     self._adapter.send({
@@ -328,7 +401,7 @@ class TelegramService(QObject):
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
 
-        # Handle deep favorites history scan and force live reaction fetching via viewMessages
+        # Handle deep favorites history scan with live reaction delivery
         if isinstance(extra, str) and (extra.startswith("sync_favorites_chat_") or extra == "sync_favorites_global"):
             if update_type in ("foundChatMessages", "foundMessages", "messages"):
                 messages = update.get("messages", [])
@@ -342,7 +415,6 @@ class TelegramService(QObject):
                         except ValueError:
                             cid = 0
 
-                # Force TDLib & Telegram servers to deliver reactions for all returned messages
                 msg_ids = [m["id"] for m in messages if isinstance(m, dict) and "id" in m]
                 if msg_ids and cid != 0 and self._adapter.is_loaded:
                     self._adapter.send({
@@ -352,29 +424,29 @@ class TelegramService(QObject):
                         "force_read": False,
                     })
 
-                has_changes = False
+                has_new_additions = False
                 for msg in messages:
                     msg_cid = msg.get("chat_id", cid)
                     track = parse_message_to_track(
                         msg_cid, msg, request_cover_callback=None, register_path_callback=self._media.register_completed_path
                     )
                     if track:
-                        # STRICT CHECK: Only if chosen by the current authenticated user
                         if track.is_liked:
                             if self._settings:
-                                self._settings.save_liked_track(track)
-                                has_changes = True
+                                is_new = self._settings.save_liked_track(track)
+                                if is_new:
+                                    has_new_additions = True
                         else:
                             if self._settings and any(lt.id == track.id for lt in self._settings.get_liked_tracks()):
                                 self._settings.remove_liked_track(track.id)
                                 self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track.id])
-                                has_changes = True
 
-                if has_changes and self._settings:
+                if has_new_additions and self._settings:
                     liked_tracks = self._settings.get_liked_tracks()
-                    self.tracks_loaded.emit(FAVORITES_CHAT_ID, liked_tracks, False)
+                    light_tracks = [self._clone_track_lightweight(t) for t in liked_tracks]
+                    self.tracks_loaded.emit(FAVORITES_CHAT_ID, light_tracks, False)
+                    self._start_staggered_covers(liked_tracks, clear_existing=True)
 
-                # Recursively continue scanning next history pages
                 if next_from_id != 0 and cid != 0:
                     self._fetch_favorites_page(cid, from_message_id=next_from_id)
             return
@@ -393,6 +465,8 @@ class TelegramService(QObject):
                             self._settings.save_liked_track(track)
                         self.track_reaction_updated.emit(track.chat_id, track.message_id, True, count)
                         self.tracks_prepended.emit(FAVORITES_CHAT_ID, [track])
+                        if track.cover_file_id > 0 and not track.cover_path:
+                            self._media.download_cover_file(track.id, track.cover_file_id)
             return
 
         if isinstance(extra, str) and extra.startswith("react_") and update_type == "error":
@@ -548,6 +622,7 @@ class TelegramService(QObject):
 
     def _on_auth_closed(self) -> None:
         self._net_timer.stop()
+        self._clear_cover_queue()
         self._connection.stop()
         if self._worker:
             self._worker.stop()
@@ -601,6 +676,9 @@ class TelegramService(QObject):
                 )
                 self._settings.save_liked_track(updated_track)
                 self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
+
+                if updated_track.cover_file_id > 0 and not updated_track.cover_path:
+                    self._media.download_cover_file(updated_track.id, updated_track.cover_file_id)
             else:
                 self._settings.remove_liked_track(track.id)
                 self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track.id])
@@ -612,8 +690,15 @@ class TelegramService(QObject):
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
         if chat_id == FAVORITES_CHAT_ID:
+            # Phase 1: Fast initial load with minithumbnails (lightweight 0ms render)
             liked_tracks = self._settings.get_liked_tracks() if self._settings else []
-            self.tracks_loaded.emit(FAVORITES_CHAT_ID, liked_tracks, False)
+            light_tracks = [self._clone_track_lightweight(t) for t in liked_tracks]
+            self.tracks_loaded.emit(FAVORITES_CHAT_ID, light_tracks, False)
+
+            # Phase 2: Smooth progressive 1-by-1 HD cover cascade
+            self._start_staggered_covers(liked_tracks, clear_existing=True)
+
+            # Phase 3: Live reaction sync from Telegram servers
             self.sync_favorites_from_telegram()
             return
 
@@ -639,6 +724,7 @@ class TelegramService(QObject):
                         if q in t.display_title.lower() or q in t.display_artist.lower()
                     ]
                     self.search_results_received.emit(FAVORITES_CHAT_ID, filtered, False)
+                    self._start_staggered_covers(filtered, clear_existing=True)
                 else:
                     self.search_results_received.emit(FAVORITES_CHAT_ID, [], False)
                 return
@@ -656,11 +742,13 @@ class TelegramService(QObject):
 
     def log_out(self) -> None:
         self._net_timer.stop()
+        self._clear_cover_queue()
         self._connection.stop()
         self._adapter.send({"@type": "logOut"})
 
     def stop(self) -> None:
         self._net_timer.stop()
+        self._clear_cover_queue()
         self._connection.stop()
         if self._worker:
             self._worker.stop()

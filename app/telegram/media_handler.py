@@ -1,4 +1,5 @@
 import base64
+from collections import defaultdict
 import logging
 from pathlib import Path
 from typing import Any, Callable
@@ -12,7 +13,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
 
 
 class MediaHandler:
-    """Manages audio file streaming downloads, HD cover art, and immediate completion dispatching."""
+    """Manages audio file streaming downloads, HD cover art, and collision-free completion dispatching."""
 
     def __init__(
         self,
@@ -32,11 +33,12 @@ class MediaHandler:
 
         self._file_id_to_path: dict[int, str] = {}
         self._downloading_audio_files: set[int] = set()
-        self._cover_file_to_track_id: dict[int, str] = {}
+        # Map each cover file_id to a set of track_ids (handles shared album/channel artwork)
+        self._cover_file_to_track_ids: dict[int, set[str]] = defaultdict(set)
 
     @property
     def has_active_downloads(self) -> bool:
-        return bool(self._downloading_audio_files or self._cover_file_to_track_id)
+        return bool(self._downloading_audio_files or self._cover_file_to_track_ids)
 
     def get_downloaded_path(self, file_id: int) -> str | None:
         path = self._file_id_to_path.get(file_id)
@@ -90,7 +92,7 @@ class MediaHandler:
         if not file_id:
             return
 
-        self._cover_file_to_track_id[file_id] = track_id
+        self._cover_file_to_track_ids[file_id].add(track_id)
 
         existing = self.get_downloaded_path(file_id)
         if existing:
@@ -118,28 +120,31 @@ class MediaHandler:
             self._file_id_to_path[file_id] = path
             file_path = Path(path)
 
-            # Check if this file is a cover image (registered in cover map)
-            track_id = self._cover_file_to_track_id.pop(file_id, None)
-            if track_id:
+            # Check if this file is registered as a cover image
+            track_ids = self._cover_file_to_track_ids.pop(file_id, set())
+            if track_ids:
+                final_path_str = path
                 if file_path.is_file():
+                    # Name cached cover by its unique file_id to avoid track_id conflicts
                     compressed_path = get_compressed_image_path(
                         self._config.thumb_cache_dir,
                         "cover",
-                        track_id.replace("_", "-")
+                        str(file_id)
                     )
                     result = compress_image(file_path, compressed_path)
                     if result:
                         self._cache.add_file(file_id, result, file_type="thumb")
                         self._delete_from_tdlib(file_id)
-                        logger.debug("Cover compressed and cached: %s", result)
-                        self._on_cover_completed(track_id, str(result))
-                        return
+                        final_path_str = str(result)
+                    else:
+                        self._cache.add_file(file_id, file_path, file_type="thumb")
 
-                self._cache.add_file(file_id, file_path, file_type="thumb")
-                self._on_cover_completed(track_id, path)
+                # Accurately dispatch to all tracks that share this cover
+                for tid in track_ids:
+                    self._on_cover_completed(tid, final_path_str)
                 return
 
-            # Explicitly ignore any other image files (avatars, previews) from audio export
+            # Explicitly ignore non-audio image files (avatars, previews)
             if file_path.suffix.lower() in IMAGE_EXTENSIONS:
                 return
 

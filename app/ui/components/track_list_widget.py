@@ -94,7 +94,7 @@ def create_rounded_cover_pixmap(
 
 
 class TrackItemWidget(QWidget):
-    """Custom Telegram-styled track list item with like button and dynamic state updating."""
+    """Custom Telegram-styled track list item with like button and smooth visual transitions."""
 
     like_clicked = Signal(Track)
 
@@ -289,7 +289,7 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget with robust widget deletion and real-time state synchronization."""
+    """List widget with robust widget deletion, fast pagination, and smooth cover transitions."""
 
     track_selected = Signal(Track)
     track_like_toggled = Signal(Track)
