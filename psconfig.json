@@ -1,7 +1,7 @@
 {
   "root": "../",
   "output": "project_snapshot",
-  "format": "yaml",
+  "format": "md",
   "max_size": 10485760,
   "min_size": 0,
   "include_patterns": [],
@@ -25,13 +25,13 @@
   ],
   "exclude_files": [
     "project_snapshot.md", ".env", ".env.local", ".env.production", ".env.development",
-    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Todo.md", "Agent.md", "ProjectStructure.md", "project_snapshot.md"
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Todo.md", "Agent.md", "ProjectStructure.md", "project_snapshot.md", "psconfig.json", "project_snapshot.yaml", "project_snapshot.py"
   ],
   "exclude_dirs": [
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env",
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", "dist", "build", "out", ".idea", ".vscode",
-    "coverage", ".coverage", ".next", ".nuxt", ".turbo", "target", "vendor"
+    "coverage", ".coverage", ".next", ".nuxt", ".turbo", "target", "vendor", "native", "resources"
   ],
   "compress": true,
   "aggressive": false,
