@@ -205,22 +205,19 @@ class CacheManager:
         else:
             return f"{MAX_CACHE_SIZE_BYTES / (1024 * 1024 * 1024):.0f} GiB"
 
-    def get_downloads_size(self, downloads_dir: Path | None = None) -> int:
-        """Calculate size of user downloads folder. If directory is not provided, use config default."""
-        target = downloads_dir or self._config.downloads_dir
-        if not target.exists():
+    def get_downloads_size(self) -> int:
+        """Calculate size of user downloads folder."""
+        download_dir = self._config.downloads_dir
+        if not download_dir.exists():
             return 0
         total = 0
-        for item in target.rglob("*"):
+        for item in download_dir.rglob("*"):
             if item.is_file():
-                try:
-                    total += item.stat().st_size
-                except OSError:
-                    pass
+                total += item.stat().st_size
         return total
 
-    def get_formatted_downloads_size(self, downloads_dir: Path | None = None) -> str:
-        size = self.get_downloads_size(downloads_dir)
+    def get_formatted_downloads_size(self) -> str:
+        size = self.get_downloads_size()
         if size < 1024 * 1024:
             return f"{size / 1024:.1f} KB"
         return f"{size / (1024 * 1024):.1f} MB"

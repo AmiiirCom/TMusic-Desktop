@@ -162,41 +162,35 @@ class PlayerService(QObject):
     def _get_clean_download_destination(self, track: Track) -> Path:
         ext = Path(track.file_name).suffix or ".mp3"
         clean_title = sanitize_filename(f"{track.display_artist} - {track.display_title}{ext}")
-        return self._settings.effective_downloads_dir / clean_title
+        return self._config.downloads_dir / clean_title
 
     def _find_existing_download_on_disk(self, track: Track) -> Path | None:
-        """Search for the track in the downloads directory (using settings) and in the registry."""
-        # Check registry (persisted)
         persisted_path = self._settings.get_downloaded_track_path(track.id, track.file_id)
         if persisted_path:
             p = Path(persisted_path)
             if p.exists() and p.stat().st_size > 0:
                 return p
 
-        # Check in-memory cache
         mem_cached = self._cached_paths.get(track.file_id)
         if mem_cached:
             p = Path(mem_cached)
             if p.exists() and p.stat().st_size > 0:
                 return p
 
-        # Scan the effective downloads directory
-        downloads_dir = self._settings.effective_downloads_dir
         ext = Path(track.file_name).suffix or ".mp3"
         candidates = [
-            downloads_dir / self._get_clean_download_destination(track).name,
-            downloads_dir / sanitize_filename(track.file_name),
-            downloads_dir / sanitize_filename(f"{track.display_title}{ext}"),
-            downloads_dir / sanitize_filename(f"{track.title}{ext}"),
+            self._get_clean_download_destination(track),
+            self._config.downloads_dir / sanitize_filename(track.file_name),
+            self._config.downloads_dir / sanitize_filename(f"{track.display_title}{ext}"),
+            self._config.downloads_dir / sanitize_filename(f"{track.title}{ext}"),
         ]
 
         for cand in candidates:
             if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
                 return cand
 
-        # Fallback: if size matches, scan all files in downloads dir
-        if track.size_bytes > 0 and downloads_dir.exists():
-            for f in downloads_dir.glob("*"):
+        if track.size_bytes > 0 and self._config.downloads_dir.exists():
+            for f in self._config.downloads_dir.glob("*"):
                 if f.is_file() and f.stat().st_size == track.size_bytes:
                     return f
 
@@ -244,13 +238,13 @@ class PlayerService(QObject):
                         continue
 
                     clean_name = self._resolve_clean_name_for_file(file_path)
-                    dest_file = self._settings.effective_downloads_dir / clean_name
+                    dest_file = self._config.downloads_dir / clean_name
 
                     try:
-                        self._settings.effective_downloads_dir.mkdir(parents=True, exist_ok=True)
+                        self._config.downloads_dir.mkdir(parents=True, exist_ok=True)
                         src_size = file_path.stat().st_size
 
-                        if has_sufficient_disk_space(self._settings.effective_downloads_dir, src_size):
+                        if has_sufficient_disk_space(self._config.downloads_dir, src_size):
                             if not dest_file.exists() or dest_file.stat().st_size != src_size:
                                 shutil.copy2(file_path, dest_file)
 
@@ -426,11 +420,9 @@ class PlayerService(QObject):
             logger.debug("Cannot access %s for file_id %d: %s", internal_path, file_id, exc)
             return
 
-        # Ignore non-audio files (e.g., covers)
         if internal_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
             return
 
-        # Find the corresponding track
         matching_track = self._known_tracks.get(file_id)
         if not matching_track:
             if self._current_track and self._current_track.file_id == file_id:
@@ -441,50 +433,40 @@ class PlayerService(QObject):
                         matching_track = t
                         break
 
-        # If saving is enabled, copy to downloads directory and switch
-        if self._settings.save_tracks_enabled:
-            if matching_track:
-                dest_file = self._get_clean_download_destination(matching_track)
-                track_id = matching_track.id
-            else:
-                clean_name = self._resolve_clean_name_for_file(internal_path)
-                dest_file = self._settings.effective_downloads_dir / clean_name
-                track_id = f"0_{file_id}"
-
-            src_size = internal_path.stat().st_size
-
-            try:
-                self._settings.effective_downloads_dir.mkdir(parents=True, exist_ok=True)
-
-                if has_sufficient_disk_space(self._settings.effective_downloads_dir, src_size):
-                    if not dest_file.exists() or dest_file.stat().st_size != src_size:
-                        shutil.copy2(internal_path, dest_file)
-
-                    if dest_file.exists() and dest_file.stat().st_size == src_size:
-                        self._cached_paths[file_id] = str(dest_file)
-                        self._settings.register_downloaded_track(track_id, file_id, str(dest_file))
-                        self._telegram.register_downloaded_path(file_id, str(dest_file))
-
-                        logger.info("✅ Exported to TMusicDownloads: %s", dest_file.name)
-
-                        if self._current_track and self._current_track.file_id == file_id:
-                            self._switch_active_stream_to_local_file(dest_file)
-
-                        # Remove from TDLib cache after successful export
-                        self._cache.remove_file(file_id, delete_from_tdlib=True)
-                        logger.debug("🗑️ Removed cached temp file (file_id=%d)", file_id)
-            except Exception as exc:
-                logger.warning("Could not export to %s: %s", dest_file, exc)
-                # Fallback: keep internal path
-                self._cached_paths[file_id] = str(internal_path)
+        if matching_track:
+            dest_file = self._get_clean_download_destination(matching_track)
+            track_id = matching_track.id
         else:
-            # Saving disabled: just store the internal path and switch if it's the current track
-            logger.debug("Saving disabled, keeping file in TDLib cache: %s", internal_path)
-            self._cached_paths[file_id] = str(internal_path)
-            if self._current_track and self._current_track.file_id == file_id:
-                self._switch_active_stream_to_local_file(internal_path)
+            clean_name = self._resolve_clean_name_for_file(internal_path)
+            dest_file = self._config.downloads_dir / clean_name
+            track_id = f"0_{file_id}"
 
-        # If it's the current track, refresh metadata
+        src_size = internal_path.stat().st_size
+
+        try:
+            self._config.downloads_dir.mkdir(parents=True, exist_ok=True)
+
+            if has_sufficient_disk_space(self._config.downloads_dir, src_size):
+                if not dest_file.exists() or dest_file.stat().st_size != src_size:
+                    shutil.copy2(internal_path, dest_file)
+
+                if dest_file.exists() and dest_file.stat().st_size == src_size:
+                    self._cached_paths[file_id] = str(dest_file)
+                    self._settings.register_downloaded_track(track_id, file_id, str(dest_file))
+                    self._telegram.register_downloaded_path(file_id, str(dest_file))
+
+                    logger.info("✅ Exported to TMusicDownloads: %s", dest_file.name)
+
+                    if self._current_track and self._current_track.file_id == file_id:
+                        self._switch_active_stream_to_local_file(dest_file)
+
+                    self._cache.remove_file(file_id, delete_from_tdlib=True)
+                    logger.debug("🗑️ Removed cached temp file (file_id=%d)", file_id)
+
+        except Exception as exc:
+            logger.warning("Could not export to %s: %s", dest_file, exc)
+            self._cached_paths[file_id] = str(internal_path)
+
         if self._current_track and self._current_track.file_id == file_id:
             self._on_media_metadata_changed()
 

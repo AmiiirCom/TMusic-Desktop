@@ -107,12 +107,6 @@ class AppConfig:
     @property
     def settings_file(self) -> Path:
         return self.app_data_dir / "settings.enc"
-    
-    # but we can add a helper to get the default explicitly if needed.
-    @property
-    def default_downloads_dir(self) -> Path:
-        """Return the default downloads directory (may be different from settings)."""
-        return self.downloads_dir
 
     downloads_dir: Path = field(default_factory=get_default_downloads_dir)
 
