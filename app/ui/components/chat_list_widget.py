@@ -1,4 +1,5 @@
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -10,9 +11,61 @@ from PySide6.QtWidgets import (
 
 from app.models.chat import OwnedChat
 
+# Official Telegram Desktop vibrant avatar color palette
+TELEGRAM_AVATAR_PALETTE: tuple[str, ...] = (
+    "#e17076",  # Red / Coral
+    "#faa774",  # Orange / Amber
+    "#a695e7",  # Violet / Purple
+    "#7bc862",  # Emerald Green
+    "#6ec9cb",  # Cyan / Teal
+    "#65aadd",  # Telegram Sky Blue
+    "#ee7aae",  # Magenta / Pink
+    "#f28935",  # Warm Orange
+    "#56b949",  # Mint Green
+    "#8e55e7",  # Deep Violet
+)
+
+
+def get_chat_avatar_color(chat_id: int) -> str:
+    """Return a deterministic attractive color from Telegram palette for a given chat ID."""
+    idx = abs(chat_id) % len(TELEGRAM_AVATAR_PALETTE)
+    return TELEGRAM_AVATAR_PALETTE[idx]
+
+
+def create_chat_avatar_pixmap(title: str, chat_id: int, size: int = 42) -> QPixmap:
+    """Generate high-resolution anti-aliased circular avatar with initials and vibrant Telegram colors."""
+    scale = 2
+    render_size = size * scale
+    pixmap = QPixmap(render_size, render_size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+    # Rounded circle clipping
+    path = QPainterPath()
+    path.addEllipse(0, 0, render_size, render_size)
+    painter.setClipPath(path)
+
+    # Fill vibrant background color
+    bg_color = QColor(get_chat_avatar_color(chat_id))
+    painter.fillRect(0, 0, render_size, render_size, bg_color)
+
+    # Draw centered initial letter
+    letter = title.strip()[:1].upper() if title.strip() else "C"
+    painter.setPen(QColor("#ffffff"))
+    font = QFont("Vazirmatn", 16 * scale, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+
+    painter.end()
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
 
 class ChatItemWidget(QWidget):
-    """Custom Telegram-style channel list item widget."""
+    """Custom Telegram-style channel list item widget with vibrant avatars."""
 
     def __init__(self, chat: OwnedChat, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -24,21 +77,13 @@ class ChatItemWidget(QWidget):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(12)
 
-        # Avatar circle with initial letter
-        avatar = QLabel(self.chat.title[:1].upper() if self.chat.title else "C")
-        avatar.setFixedSize(42, 42)
-        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        avatar.setStyleSheet("""
-            QLabel {
-                background-color: #2b5278;
-                color: #ffffff;
-                font-size: 16px;
-                font-weight: bold;
-                border-radius: 21px;
-            }
-        """)
+        # Anti-aliased vibrant initial avatar
+        self.avatar_label = QLabel()
+        self.avatar_label.setFixedSize(42, 42)
+        self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.avatar_label.setPixmap(create_chat_avatar_pixmap(self.chat.title, self.chat.id, size=42))
 
-        # Details
+        # Channel text info
         info_layout = QVBoxLayout()
         info_layout.setSpacing(3)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -52,7 +97,7 @@ class ChatItemWidget(QWidget):
         info_layout.addWidget(title_label)
         info_layout.addWidget(type_label)
 
-        layout.addWidget(avatar)
+        layout.addWidget(self.avatar_label)
         layout.addLayout(info_layout)
         layout.addStretch()
 
@@ -61,7 +106,7 @@ class OwnedChatListWidget(QListWidget):
     """List widget holding user owned music channels with search capability."""
 
     chat_selected = Signal(OwnedChat)
-    search_requested = Signal(str)  # Emitted when user types a search query
+    search_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -118,19 +163,14 @@ class OwnedChatListWidget(QListWidget):
     def set_active_chat(self, chat_id: int | None) -> None:
         """Highlight the selected chat."""
         self._active_chat_id = chat_id
-        # Update visual state of items
         for i in range(self.count()):
             item = self.item(i)
             widget = self.itemWidget(item)
             if isinstance(widget, ChatItemWidget):
                 is_active = (widget.chat.id == chat_id)
-                if is_active:
-                    item.setSelected(True)
-                else:
-                    item.setSelected(False)
+                item.setSelected(is_active)
 
     def update_chat_cover(self, chat_id: int, cover_path: str) -> None:
-        """Update cover for a specific chat (not used in chat list, kept for consistency)."""
         pass
 
     def scroll_to_chat(self, chat_id: int) -> None:
