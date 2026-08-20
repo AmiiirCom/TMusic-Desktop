@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.settings.service import ProxySettings
 from app.ui.views.proxy_dialog import ProxyDialog
 
 
@@ -18,10 +19,11 @@ class LoginView(QWidget):
     phone_submitted = Signal(str)
     code_submitted = Signal(str)
     password_submitted = Signal(str)
-    proxy_configured = Signal(str, str, int)
+    proxy_configured = Signal(object)  # Emits ProxySettings
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._current_proxy_settings = ProxySettings()
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._init_ui()
 
@@ -215,12 +217,13 @@ class LoginView(QWidget):
                 self.conn_status_label.setStyleSheet("color: #e53935; font-size: 12px;")
 
     def _open_proxy_dialog(self) -> None:
-        dialog = ProxyDialog(self.window())
-        dialog.proxy_applied.connect(self.proxy_configured.emit)
-        if hasattr(self.window(), "exec_modal_with_backdrop"):
-            self.window().exec_modal_with_backdrop(dialog)
-        else:
-            dialog.exec()
+        dialog = ProxyDialog(parent=self.window(), current_settings=self._current_proxy_settings)
+        dialog.proxy_applied.connect(self._on_proxy_dialog_applied)
+        dialog.exec()
+
+    def _on_proxy_dialog_applied(self, settings: ProxySettings) -> None:
+        self._current_proxy_settings = settings
+        self.proxy_configured.emit(settings)
 
     def show_phone_step(self) -> None:
         self._reset_buttons()

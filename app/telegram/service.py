@@ -10,7 +10,7 @@ from app.core.keywords import is_music_title
 from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
-from app.settings.service import SettingsService
+from app.settings.service import ProxySettings, SettingsService, detect_system_proxy
 from app.telegram.adapter import TDLibAdapter
 from app.telegram.auth_handler import AuthHandler
 from app.telegram.chat_handler import ChatHandler
@@ -20,6 +20,12 @@ from app.telegram.track_handler import TrackHandler
 from app.telegram.worker import TDLibWorker
 
 logger = logging.getLogger("tmusic.telegram.service")
+
+# Network health check and reconnect interval constants (seconds)
+CONNECTED_HEALTH_CHECK_INTERVAL_SEC = 90
+INITIAL_RETRY_INTERVAL_SEC = 15
+RETRY_INTERVAL_STEP_SEC = 15
+MAX_RETRY_INTERVAL_SEC = 120
 
 
 @dataclass(slots=True)
@@ -32,11 +38,12 @@ class ChatTrackPaginationState:
 
 
 class TelegramService(QObject):
-    """Event-Driven Telegram service with direct header byte inspection and real-time updates."""
+    """Event-Driven Telegram service with 90s active health checks and incremental reconnect backoff."""
 
     auth_state_changed = Signal(str)
     auth_error = Signal(str)
     connection_state_changed = Signal(str)
+    connection_retry_interval_changed = Signal(int)
 
     user_loaded = Signal(TelegramUser)
     owned_chats_loaded = Signal(list)
@@ -52,8 +59,8 @@ class TelegramService(QObject):
     file_download_completed = Signal(int, str)
     network_traffic_received = Signal(int, int)
 
-    search_results_received = Signal(object, list, bool)  # (chat_id, tracks, has_more)
-    chat_search_results_received = Signal(list)  # list[OwnedChat]
+    search_results_received = Signal(object, list, bool)
+    chat_search_results_received = Signal(list)
 
     def __init__(
         self,
@@ -72,6 +79,17 @@ class TelegramService(QObject):
         self._my_user_id: int = 0
         self._current_user: TelegramUser | None = None
         self._avatar_file_id: int = 0
+
+        # Periodic health check while connected (every 90s)
+        self._health_check_timer = QTimer(self)
+        self._health_check_timer.setInterval(CONNECTED_HEALTH_CHECK_INTERVAL_SEC * 1000)
+        self._health_check_timer.timeout.connect(self._on_health_check_timeout)
+
+        # Incremental reconnect timer when disconnected (15s -> 30s -> ... -> 120s)
+        self._current_retry_interval: int = INITIAL_RETRY_INTERVAL_SEC
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._on_reconnect_timer_timeout)
 
         self._auth = AuthHandler(
             config=self._config,
@@ -192,6 +210,54 @@ class TelegramService(QObject):
                 "@extra": "periodic_net_stats",
             })
 
+    def _handle_connection_state_change(self, state: str) -> None:
+        if state == "connectionStateReady":
+            logger.info("TDLib connection is READY. Starting 90s active health checks.")
+            self._current_retry_interval = INITIAL_RETRY_INTERVAL_SEC
+            self._reconnect_timer.stop()
+            self.connection_retry_interval_changed.emit(0)
+
+            # Start periodic 90s health check while connected
+            if not self._health_check_timer.isActive():
+                self._health_check_timer.start()
+        else:
+            # Stop connected health check and start/continue incremental reconnect loop
+            self._health_check_timer.stop()
+            if not self._reconnect_timer.isActive():
+                logger.debug(
+                    "Connection state '%s'. Scheduling reconnect check in %d seconds.",
+                    state,
+                    self._current_retry_interval,
+                )
+                self._reconnect_timer.start(self._current_retry_interval * 1000)
+                self.connection_retry_interval_changed.emit(self._current_retry_interval)
+
+    def _on_health_check_timeout(self) -> None:
+        """Perform active 90-second socket and reachability health ping while connected."""
+        if not self._adapter.is_loaded:
+            return
+
+        logger.debug("Executing periodic 90s connection health verification...")
+        self.set_online_status(True)
+        self._adapter.send({"@type": "getOption", "name": "version", "@extra": "health_ping"})
+
+    def _on_reconnect_timer_timeout(self) -> None:
+        if not self._adapter.is_loaded:
+            return
+
+        logger.info("Executing incremental reconnect check (interval: %ds)...", self._current_retry_interval)
+
+        # Nudge TDLib by asserting online status and reapplying proxy settings
+        self.set_online_status(True)
+        if self._settings:
+            self.apply_proxy_settings(self._settings.preferences.proxy)
+
+        # Increase interval for next retry (15 -> 30 -> 45 ... -> 120s max)
+        next_interval = min(MAX_RETRY_INTERVAL_SEC, self._current_retry_interval + RETRY_INTERVAL_STEP_SEC)
+        self._current_retry_interval = next_interval
+        self.connection_retry_interval_changed.emit(self._current_retry_interval)
+        self._reconnect_timer.start(self._current_retry_interval * 1000)
+
     def _handle_update(self, update: dict[str, Any]) -> None:
         update_type = update.get("@type", "")
         extra = update.get("@extra", "")
@@ -255,10 +321,8 @@ class TelegramService(QObject):
         # Chat details from search
         if isinstance(extra, str) and extra.startswith("search_chat_details_"):
             if update_type == "chat":
-                # extra format: search_chat_details_{search_id}_{chat_id}
                 parts = extra.split("_")
                 if len(parts) >= 5:
-                    # Extract search_id (join parts 3 to second-last)
                     search_id = "_".join(parts[3:-1])
                     try:
                         chat_id = int(parts[-1])
@@ -277,13 +341,14 @@ class TelegramService(QObject):
             self._chats.process_supergroup_update(update)
             return
 
-        # Pure real-time event stream
+        # Real-time event stream
         match update_type:
             case "updateAuthorizationState":
                 self._auth.process_update(update.get("authorization_state", {}))
 
             case "updateConnectionState":
                 state = update.get("state", {}).get("@type", "")
+                self._handle_connection_state_change(state)
                 self.connection_state_changed.emit(state)
 
             case "updateNewMessage":
@@ -309,7 +374,7 @@ class TelegramService(QObject):
                             compressed_path = get_compressed_image_path(
                                 self._config.thumb_cache_dir,
                                 "avatar",
-                                str(self._current_user.id)
+                                str(self._current_user.id),
                             )
                             result = compress_image(original_path, compressed_path)
                             if result:
@@ -379,6 +444,8 @@ class TelegramService(QObject):
     def _on_auth_closed(self) -> None:
         logger.info("TDLib authorization closed (session terminated remotely).")
         self._net_timer.stop()
+        self._health_check_timer.stop()
+        self._reconnect_timer.stop()
         if self._worker:
             self._worker.stop()
             self._worker = None
@@ -463,7 +530,7 @@ class TelegramService(QObject):
         self.user_loaded.emit(user)
 
     # ------------------------------------------------------------------
-    # Public Commands
+    # Public Commands & Proxy Dispatching
     # ------------------------------------------------------------------
 
     def send_phone_number(self, phone_number: str) -> None:
@@ -511,6 +578,35 @@ class TelegramService(QObject):
         """Handle chat search results and emit signal."""
         self.chat_search_results_received.emit(chats)
 
+    def apply_proxy_settings(self, proxy: ProxySettings) -> None:
+        """Apply Direct, System, or Custom proxy configuration to TDLib."""
+        if proxy.mode == "DIRECT" or not proxy.enabled:
+            self.disable_proxy()
+        elif proxy.mode == "SYSTEM":
+            sys_proxy = detect_system_proxy()
+            if sys_proxy:
+                ptype, server, port, user, pwd = sys_proxy
+                logger.info("Applying detected System Proxy: %s (%s:%d)", ptype, server, port)
+                if ptype == "SOCKS5":
+                    self.set_socks5_proxy(server, port, user, pwd)
+                else:
+                    self.set_http_proxy(server, port, user, pwd)
+            else:
+                logger.info("No active system proxy detected. Falling back to direct connection.")
+                self.disable_proxy()
+        elif proxy.mode == "CUSTOM":
+            logger.info("Applying Custom Proxy: %s (%s:%d)", proxy.proxy_type, proxy.server, proxy.port)
+            if proxy.proxy_type == "SOCKS5":
+                self.set_socks5_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
+            else:
+                self.set_http_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
+
+    def disable_proxy(self) -> None:
+        """Disable TDLib proxy and use direct connection."""
+        logger.info("Disabling Telegram proxy (Direct connection)")
+        if self._adapter.is_loaded:
+            self._adapter.send({"@type": "disableProxy"})
+
     def set_socks5_proxy(self, server: str, port: int, username: str = "", password: str = "") -> None:
         logger.info("Setting SOCKS5 proxy: %s:%d", server, port)
         self._adapter.send({
@@ -541,10 +637,14 @@ class TelegramService(QObject):
 
     def log_out(self) -> None:
         self._net_timer.stop()
+        self._health_check_timer.stop()
+        self._reconnect_timer.stop()
         self._adapter.send({"@type": "logOut"})
 
     def stop(self) -> None:
         self._net_timer.stop()
+        self._health_check_timer.stop()
+        self._reconnect_timer.stop()
         if self._worker:
             self._worker.stop()
             self._worker = None

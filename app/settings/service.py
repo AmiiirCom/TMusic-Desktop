@@ -3,6 +3,8 @@ from dataclasses import asdict, dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
+import urllib.request
+from urllib.parse import urlparse
 
 from app.config import AppConfig
 from app.core.security import CryptoManager
@@ -12,8 +14,40 @@ from app.models.user import TelegramUser
 logger = logging.getLogger("tmusic.settings.service")
 
 
+def detect_system_proxy() -> tuple[str, str, int, str, str] | None:
+    """
+    Detect system proxy configured on the operating system (Windows, macOS, Linux).
+    Returns: (proxy_type, server, port, username, password) or None
+    """
+    try:
+        proxies = urllib.request.getproxies()
+        if not proxies:
+            return None
+
+        # Prioritize SOCKS proxies, then HTTPS, then HTTP
+        for proto in ("socks5", "socks", "https", "http"):
+            if proto in proxies:
+                raw_url = proxies[proto]
+                if not raw_url:
+                    continue
+                if not raw_url.startswith(("http://", "https://", "socks://", "socks5://")):
+                    raw_url = f"{proto}://{raw_url}"
+
+                parsed = urlparse(raw_url)
+                p_type = "SOCKS5" if "sock" in proto else "HTTP"
+                host = parsed.hostname or "127.0.0.1"
+                port = parsed.port or (10808 if p_type == "SOCKS5" else 8080)
+                user = parsed.username or ""
+                pwd = parsed.password or ""
+                return (p_type, host, port, user, pwd)
+    except Exception as exc:
+        logger.debug("Failed to detect system proxy: %s", exc)
+    return None
+
+
 @dataclass(slots=True)
 class ProxySettings:
+    mode: str = "DIRECT"  # "DIRECT", "SYSTEM", "CUSTOM"
     enabled: bool = False
     proxy_type: str = "SOCKS5"
     server: str = "127.0.0.1"
@@ -57,8 +91,14 @@ class SettingsService:
 
         try:
             proxy_data = data.get("proxy", {})
+            mode = proxy_data.get("mode")
+            if not mode:
+                # Backward compatibility: determine mode from enabled flag
+                mode = "CUSTOM" if proxy_data.get("enabled", False) else "DIRECT"
+
             proxy = ProxySettings(
-                enabled=proxy_data.get("enabled", False),
+                mode=mode,
+                enabled=(mode != "DIRECT"),
                 proxy_type=proxy_data.get("proxy_type", "SOCKS5"),
                 server=proxy_data.get("server", "127.0.0.1"),
                 port=proxy_data.get("port", 10808),
@@ -184,7 +224,20 @@ class SettingsService:
             minithumb_data=minithumb_bytes,
         )
 
-    def set_proxy(self, proxy_type: str, server: str, port: int, enabled: bool = True) -> None:
+    def set_proxy_settings(self, proxy: ProxySettings) -> None:
+        """Update and persist complete proxy configuration."""
+        self._preferences.proxy = proxy
+        self.save()
+
+    def set_proxy(
+        self,
+        proxy_type: str,
+        server: str,
+        port: int,
+        mode: str = "CUSTOM",
+        enabled: bool = True,
+    ) -> None:
+        self._preferences.proxy.mode = mode
         self._preferences.proxy.enabled = enabled
         self._preferences.proxy.proxy_type = proxy_type
         self._preferences.proxy.server = server

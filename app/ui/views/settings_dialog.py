@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from app.cache.service import CacheManager
 from app.config import AppConfig
-from app.settings.service import SettingsService
+from app.settings.service import ProxySettings, SettingsService, detect_system_proxy
 from app.ui.views.base_modal import BaseModalDialog
 
 
@@ -24,7 +24,7 @@ class SettingsDialog(BaseModalDialog):
     """Clean, well-proportioned Settings, Proxy, and Storage management modal."""
 
     cache_cleared = Signal()
-    proxy_saved = Signal(str, str, int)
+    proxy_saved = Signal(object)  # Emits ProxySettings
     logout_requested = Signal()
 
     def __init__(
@@ -48,7 +48,32 @@ class SettingsDialog(BaseModalDialog):
         proxy_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #6ab3f3;")
         self.body_layout.addWidget(proxy_title)
 
-        form = QFormLayout()
+        # Mode Selection
+        self.proxy_mode_combo = QComboBox()
+        self.proxy_mode_combo.addItem("بدون پروکسی (اتصال مستقیم / Direct)", "DIRECT")
+        self.proxy_mode_combo.addItem("استفاده از پروکسی سیستم (System Proxy)", "SYSTEM")
+        self.proxy_mode_combo.addItem("پروکسی دستی (Custom SOCKS5 / HTTP)", "CUSTOM")
+
+        current_mode = self._settings.preferences.proxy.mode
+        idx = self.proxy_mode_combo.findData(current_mode)
+        if idx != -1:
+            self.proxy_mode_combo.setCurrentIndex(idx)
+        else:
+            self.proxy_mode_combo.setCurrentIndex(0)
+
+        self.proxy_mode_combo.currentIndexChanged.connect(self._on_proxy_mode_changed)
+        self.body_layout.addWidget(self.proxy_mode_combo)
+
+        # Status Hint
+        self.proxy_status_hint = QLabel()
+        self.proxy_status_hint.setWordWrap(True)
+        self.proxy_status_hint.setStyleSheet("font-size: 11px; color: #7f91a4; margin: 2px 0;")
+        self.body_layout.addWidget(self.proxy_status_hint)
+
+        # Manual Form Frame
+        self.manual_proxy_frame = QFrame()
+        form = QFormLayout(self.manual_proxy_frame)
+        form.setContentsMargins(0, 4, 0, 4)
         form.setSpacing(8)
 
         self.proxy_type = QComboBox()
@@ -63,15 +88,17 @@ class SettingsDialog(BaseModalDialog):
         self.proxy_port.setText(str(self._settings.preferences.proxy.port))
         self.proxy_port.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
 
-        form.addRow("نوع پروکسی:", self.proxy_type)
+        form.addRow("نوع پروتکل:", self.proxy_type)
         form.addRow("آدرس سرور:", self.proxy_server)
         form.addRow("پورت:", self.proxy_port)
-        self.body_layout.addLayout(form)
+        self.body_layout.addWidget(self.manual_proxy_frame)
 
         btn_save_proxy = QPushButton("ذخیره و فعال‌سازی پروکسی")
         btn_save_proxy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_save_proxy.clicked.connect(self._on_save_proxy)
         self.body_layout.addWidget(btn_save_proxy)
+
+        self._on_proxy_mode_changed()
 
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.HLine)
@@ -177,14 +204,44 @@ class SettingsDialog(BaseModalDialog):
         btn_logout.clicked.connect(self._on_logout_clicked)
         self.body_layout.addWidget(btn_logout)
 
+    def _on_proxy_mode_changed(self) -> None:
+        mode = self.proxy_mode_combo.currentData()
+        if mode == "DIRECT":
+            self.manual_proxy_frame.hide()
+            self.proxy_status_hint.setText("🌐 اتصال مستقیم بدون پروکسی برقرار می‌شود.")
+            self.proxy_status_hint.setStyleSheet("color: #7f91a4; font-size: 11px;")
+        elif mode == "SYSTEM":
+            self.manual_proxy_frame.hide()
+            sys_proxy = detect_system_proxy()
+            if sys_proxy:
+                ptype, host, port, _, _ = sys_proxy
+                self.proxy_status_hint.setText(f"✅ پروکسی سیستم شناسایی شد: {ptype}://{host}:{port}")
+                self.proxy_status_hint.setStyleSheet("color: #4fae4e; font-size: 11px; font-weight: bold;")
+            else:
+                self.proxy_status_hint.setText("⚠️ پروکسی فعالی روی سیستم‌عامل شناسایی نشد (اتصال مستقیم برقرار می‌شود).")
+                self.proxy_status_hint.setStyleSheet("color: #e6a23c; font-size: 11px;")
+        elif mode == "CUSTOM":
+            self.manual_proxy_frame.show()
+            self.proxy_status_hint.setText("⚙️ مشخصات پروکسی SOCKS5 یا HTTP خود را وارد کنید:")
+            self.proxy_status_hint.setStyleSheet("color: #6ab3f3; font-size: 11px;")
+
     def _on_save_proxy(self) -> None:
+        mode = self.proxy_mode_combo.currentData()
         ptype = self.proxy_type.currentText()
         server = self.proxy_server.text().strip() or "127.0.0.1"
         port_txt = self.proxy_port.text().strip()
         port = int(port_txt) if port_txt.isdigit() else 10808
 
-        self._settings.set_proxy(ptype, server, port, enabled=True)
-        self.proxy_saved.emit(ptype, server, port)
+        settings = ProxySettings(
+            mode=mode,
+            enabled=(mode != "DIRECT"),
+            proxy_type=ptype,
+            server=server,
+            port=port,
+        )
+
+        self._settings.set_proxy_settings(settings)
+        self.proxy_saved.emit(settings)
 
     def _on_toggle_save_to_downloads(self, checked: bool) -> None:
         self._settings.set_save_to_downloads(checked)

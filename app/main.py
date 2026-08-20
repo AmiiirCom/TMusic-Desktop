@@ -24,13 +24,14 @@ from app.network.meter import NetworkMeter
 from app.network.stream_server import LocalStreamServer
 from app.player.service import PlayerService
 from app.platform.tray_service import TrayService
-from app.settings.service import SettingsService
+from app.settings.service import ProxySettings, SettingsService
 from app.telegram.adapter import TDLibAdapter
 from app.telegram.enums import AuthState
 from app.telegram.service import TelegramService
 from app.ui.views.login_view import LoginView
 from app.ui.views.lyrics_dialog import LyricsDialog
 from app.ui.views.main_view import MainView
+from app.ui.views.proxy_dialog import ProxyDialog
 from app.ui.views.settings_dialog import SettingsDialog
 from app.ui.views.track_info_dialog import TrackInfoDialog
 
@@ -143,7 +144,8 @@ class MainWindow(QMainWindow):
         # Telegram signals
         self._telegram.auth_state_changed.connect(self._on_auth_state_changed)
         self._telegram.auth_error.connect(self._login_view.show_error)
-        self._telegram.connection_state_changed.connect(self._login_view.set_connection_status)
+        self._telegram.connection_state_changed.connect(self._on_connection_state_changed)
+        self._telegram.connection_retry_interval_changed.connect(self._main_view.set_retry_interval)
         self._telegram.user_loaded.connect(self._main_view.set_user)
         self._telegram.owned_chats_loaded.connect(self._main_view.set_owned_chats)
         self._telegram.tracks_loaded.connect(self._on_initial_tracks_loaded)
@@ -164,12 +166,8 @@ class MainWindow(QMainWindow):
 
     def _apply_saved_proxy(self) -> None:
         proxy = self._settings.preferences.proxy
-        if proxy.enabled and proxy.server:
-            logger.info("Applying saved proxy: %s (%s:%d)", proxy.proxy_type, proxy.server, proxy.port)
-            if proxy.proxy_type == "SOCKS5":
-                self._telegram.set_socks5_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
-            else:
-                self._telegram.set_http_proxy(proxy.server, proxy.port, proxy.username, proxy.password)
+        self._telegram.apply_proxy_settings(proxy)
+        self._main_view.set_connection_state("connectionStateConnecting", proxy)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._is_quitting:
@@ -198,6 +196,11 @@ class MainWindow(QMainWindow):
         dialog.logout_requested.connect(self._on_perform_logout)
         dialog.exec()
 
+    def _open_proxy_dialog(self) -> None:
+        dialog = ProxyDialog(parent=self, current_settings=self._settings.preferences.proxy)
+        dialog.proxy_applied.connect(self._on_proxy_configured)
+        dialog.exec()
+
     def _open_lyrics_dialog(self) -> None:
         track = self._player.current_track
         meta = self._player.current_metadata
@@ -222,11 +225,9 @@ class MainWindow(QMainWindow):
         logger.info("Performing factory reset logout: wiping all data and cache...")
         self._is_quitting = True
 
-        # Stop playback
         if self._player.is_playing:
             self._player.toggle_play_pause()
 
-        # Shut down background services to release file locks
         try:
             self._telegram.stop()
             self._stream_server.stop()
@@ -234,7 +235,6 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.warning("Error during service shutdown: %s", exc)
 
-        # Delete entire organization directories
         for dir_path in (self._config.org_data_root, self._config.org_cache_root):
             if dir_path.exists():
                 try:
@@ -243,12 +243,16 @@ class MainWindow(QMainWindow):
                 except Exception as exc:
                     logger.warning("Could not remove %s: %s", dir_path, exc)
 
-        # Exit the application
         QApplication.quit()
 
     # ------------------------------------------------------------------
     # UI Event Handlers
     # ------------------------------------------------------------------
+
+    @Slot(str)
+    def _on_connection_state_changed(self, state: str) -> None:
+        self._login_view.set_connection_status(state)
+        self._main_view.set_connection_state(state, self._settings.preferences.proxy)
 
     @Slot(int)
     def _on_volume_changed(self, volume: int) -> None:
@@ -260,13 +264,11 @@ class MainWindow(QMainWindow):
         self._player.set_playback_rate(speed)
         self._settings.set_playback_rate(speed)
 
-    @Slot(str, str, int)
-    def _on_proxy_configured(self, proxy_type: str, server: str, port: int) -> None:
-        self._settings.set_proxy(proxy_type, server, port, enabled=True)
-        if proxy_type == "SOCKS5":
-            self._telegram.set_socks5_proxy(server, port)
-        else:
-            self._telegram.set_http_proxy(server, port)
+    @Slot(object)
+    def _on_proxy_configured(self, proxy: ProxySettings) -> None:
+        self._settings.set_proxy_settings(proxy)
+        self._telegram.apply_proxy_settings(proxy)
+        self._main_view.set_connection_state("connectionStateConnecting", proxy)
 
     @Slot(OwnedChat)
     def _on_chat_selected(self, chat: OwnedChat) -> None:
@@ -318,7 +320,6 @@ class MainWindow(QMainWindow):
                 self._central_stack.setCurrentWidget(self._main_view)
 
             case AuthState.CLOSED:
-                # Session terminated remotely -> perform full logout (wipe data and exit)
                 logger.info("Session terminated remotely. Performing full logout...")
                 self._on_perform_logout()
 
@@ -336,14 +337,12 @@ class MainWindow(QMainWindow):
 def main() -> int:
     config = AppConfig()
 
-    # Parse command-line arguments for log level control
     parser = argparse.ArgumentParser(description="TMusic Desktop")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging (file only)")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set file log level (overrides --debug)")
     args, unknown = parser.parse_known_args()
 
-    # Determine default log level based on frozen environment
     is_frozen = getattr(sys, "frozen", False)
     default_level = logging.WARNING if is_frozen else logging.INFO
 
@@ -354,12 +353,10 @@ def main() -> int:
     else:
         log_level = default_level
 
-    # Override via environment variable if set
     env_level = os.environ.get("TMUSIC_LOG_LEVEL", "").upper()
     if env_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         log_level = getattr(logging, env_level)
 
-    # Initialize logging (console shows WARNING+ always, file respects log_level)
     setup_logging(config, log_level=log_level, console_level=logging.WARNING)
 
     logger.info("Starting %s v%s...", config.app_name, config.app_version)

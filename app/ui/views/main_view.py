@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
@@ -13,12 +14,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-import logging
 
 from app.config import AppConfig
 from app.models.chat import OwnedChat
 from app.models.track import Track
 from app.models.user import TelegramUser
+from app.settings.service import ProxySettings
 from app.ui.components.chat_list_widget import OwnedChatListWidget
 from app.ui.components.player_bar import PlayerBar
 from app.ui.components.track_list_widget import TrackListWidget
@@ -92,15 +93,67 @@ def create_circular_avatar_pixmap(
     return pixmap
 
 
+def create_connection_shield_pixmap(status: str = "ready", is_proxy: bool = False) -> QPixmap:
+    """Generate Telegram-style Hi-DPI connection shield badge without red color."""
+    scale = 2
+    size = 20 * scale
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    # Base shield path
+    shield_path = QPainterPath()
+    shield_path.moveTo(size / 2, 2 * scale)
+    shield_path.lineTo(size - (3 * scale), 5 * scale)
+    shield_path.lineTo(size - (3 * scale), size * 0.55)
+    shield_path.cubicTo(
+        size - (3 * scale), size * 0.8,
+        size / 2, size - (2 * scale),
+        size / 2, size - (2 * scale)
+    )
+    shield_path.cubicTo(
+        size / 2, size - (2 * scale),
+        3 * scale, size * 0.8,
+        3 * scale, size * 0.55
+    )
+    shield_path.lineTo(3 * scale, 5 * scale)
+    shield_path.closeSubpath()
+
+    if status == "ready":
+        fill_color = QColor("#2481cc" if is_proxy else "#4fae4e")
+        border_color = QColor(255, 255, 255, 180)
+        badge_symbol = "✓" if is_proxy else "•"
+    else:  # connecting, waiting, or retrying (neutral slate/gray)
+        fill_color = QColor("#242f3d")
+        border_color = QColor("#5d6e80")
+        badge_symbol = "⋯"
+
+    painter.setBrush(fill_color)
+    painter.setPen(QPen(border_color, 1 * scale))
+    painter.drawPath(shield_path)
+
+    # Draw inner symbol
+    painter.setPen(QColor("#ffffff" if status == "ready" else "#7f91a4"))
+    font = QFont("Segoe UI", 8 * scale, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, badge_symbol)
+
+    painter.end()
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
 class MainView(QWidget):
-    """Telegram Desktop styled main dashboard view with optimized search and scroll."""
+    """Telegram Desktop styled main dashboard view with non-clickable connection status shield."""
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
     load_more_tracks_requested = Signal(object)
     settings_requested = Signal()
-    search_full_requested = Signal(str, str)  # (chat_id as str, query)
-    chat_search_requested = Signal(str)  # query for chat search
+    search_full_requested = Signal(str, str)
+    chat_search_requested = Signal(str)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -112,15 +165,18 @@ class MainView(QWidget):
         self._search_query = ""
         self._original_chats: list[OwnedChat] = []
         self._is_chat_searching = False
+        self._connection_state = "connectionStateReady"
+        self._proxy_settings: ProxySettings = ProxySettings()
+        self._current_retry_sec: int = 0
+
         self._init_ui()
 
-        # Search debounce timer for tracks (500ms)
+        # Search debounce timers
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(500)
         self._search_timer.timeout.connect(self._perform_full_search)
 
-        # Search debounce timer for chats (500ms)
         self._chat_search_timer = QTimer(self)
         self._chat_search_timer.setSingleShot(True)
         self._chat_search_timer.setInterval(500)
@@ -245,16 +301,26 @@ class MainView(QWidget):
         self.chat_list.search_requested.connect(self._on_chat_search_requested)
         sidebar_layout.addWidget(self.chat_list, stretch=1)
 
-        # Sidebar Bottom: Live Network Stats Bar
+        # Sidebar Bottom Bar: Connection Status Badge + Live Network Stats
         stats_bar = QFrame(sidebar)
-        stats_bar.setFixedHeight(32)
-        stats_bar.setStyleSheet("background-color: #121921; padding: 4px 10px; border-top: 1px solid #0e1621;")
+        stats_bar.setFixedHeight(34)
+        stats_bar.setStyleSheet("background-color: #121921; border-top: 1px solid #0e1621;")
         stats_layout = QHBoxLayout(stats_bar)
-        stats_layout.setContentsMargins(4, 0, 4, 0)
+        stats_layout.setContentsMargins(8, 0, 10, 0)
+        stats_layout.setSpacing(8)
 
-        self.net_stats_label = QLabel("⚡ دانلود: 0 KB/s | دیتای سشن: 0 KB")
+        # Telegram Connection Shield Badge (Non-clickable passive indicator)
+        self.shield_badge = QLabel()
+        self.shield_badge.setFixedSize(22, 22)
+        self.shield_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.shield_badge.setStyleSheet("background-color: transparent; border: none;")
+        self._update_shield_icon()
+
+        self.net_stats_label = QLabel("⚡ دانلود: 0 KB/s | سشن: 0 KB")
         self.net_stats_label.setStyleSheet("color: #6ab3f3; font-size: 11px;")
-        stats_layout.addWidget(self.net_stats_label)
+
+        stats_layout.addWidget(self.shield_badge)
+        stats_layout.addWidget(self.net_stats_label, stretch=1)
         sidebar_layout.addWidget(stats_bar)
 
         # Main content
@@ -316,14 +382,14 @@ class MainView(QWidget):
         self.track_list.search_requested.connect(self._on_search_requested)
         self.content_stack.addWidget(self.track_list)
 
-        # Page 2: Search Loading (indeterminate progress bar)
+        # Page 2: Search Loading
         self.search_loading_page = QWidget()
         loading_layout = QVBoxLayout(self.search_loading_page)
         loading_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         loading_layout.setSpacing(16)
 
         self.search_progress = QProgressBar()
-        self.search_progress.setRange(0, 0)  # Indeterminate mode
+        self.search_progress.setRange(0, 0)
         self.search_progress.setFixedWidth(200)
         self.search_progress.setFixedHeight(4)
         self.search_progress.setStyleSheet("""
@@ -357,6 +423,41 @@ class MainView(QWidget):
         root_layout.addWidget(self.player_bar)
 
     # ------------------------------------------------------------------
+    # Connection State & Shield Management
+    # ------------------------------------------------------------------
+
+    def set_connection_state(self, state: str, proxy: ProxySettings | None = None) -> None:
+        """Update connection shield icon and tooltip based on TDLib connection status."""
+        self._connection_state = state
+        if proxy:
+            self._proxy_settings = proxy
+        self._update_shield_icon()
+
+    def set_retry_interval(self, interval_sec: int) -> None:
+        """Update the current incremental reconnect timer interval."""
+        self._current_retry_sec = interval_sec
+        self._update_shield_icon()
+
+    def _update_shield_icon(self) -> None:
+        is_proxy_active = (self._proxy_settings.mode != "DIRECT" and self._proxy_settings.enabled)
+
+        if self._connection_state == "connectionStateReady":
+            pixmap = create_connection_shield_pixmap("ready", is_proxy_active)
+            if is_proxy_active:
+                tooltip = f"پروکسی متصل است ({self._proxy_settings.mode} - {self._proxy_settings.server})"
+            else:
+                tooltip = "متصل به تلگرام (اتصال مستقیم)"
+        else:
+            pixmap = create_connection_shield_pixmap("waiting", is_proxy_active)
+            if self._current_retry_sec > 0:
+                tooltip = f"در حال اتصال به تلگرام (بررسی مجدد هر {self._current_retry_sec} ثانیه)..."
+            else:
+                tooltip = "در حال اتصال به تلگرام..."
+
+        self.shield_badge.setPixmap(pixmap)
+        self.shield_badge.setToolTip(tooltip)
+
+    # ------------------------------------------------------------------
     # Public Methods
     # ------------------------------------------------------------------
 
@@ -370,18 +471,14 @@ class MainView(QWidget):
         self.chat_list.set_chats(chats)
         self._original_chats = list(chats)
         self.chat_search_input.show()
-        # Hide section title if no chats
         if not chats:
             self.chat_search_input.hide()
 
     def on_chat_search_results(self, chats: list[OwnedChat]) -> None:
-        """Handle chat search results."""
         logger.debug("Chat search results: %d chats found", len(chats))
-
         if not chats:
             self.chat_list.clear()
-            # Show a placeholder item
-            from PySide6.QtWidgets import QListWidgetItem, QLabel
+            from PySide6.QtWidgets import QListWidgetItem
             item = QListWidgetItem("هیچ کانالی یافت نشد")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.chat_list.addItem(item)
@@ -391,16 +488,9 @@ class MainView(QWidget):
         self._is_chat_searching = True
 
     def restore_normal_chats(self) -> None:
-        """Restore original chat list after search."""
         if self._is_chat_searching and self._original_chats:
             self.chat_list.set_chats(self._original_chats)
             self._is_chat_searching = False
-            # Remove any placeholder items
-            if self.chat_list.count() == 1:
-                item = self.chat_list.item(0)
-                if item and not self.chat_list.itemWidget(item):
-                    self.chat_list.clear()
-                    self.chat_list.set_chats(self._original_chats)
 
     def set_active_track(self, track: Track) -> None:
         self.track_list.set_active_track(track)
@@ -411,38 +501,25 @@ class MainView(QWidget):
             self.player_bar.update_cover(cover_path)
 
     def set_network_stats(self, speed_str: str, total_str: str) -> None:
-        self.net_stats_label.setText(f"⚡ {speed_str} | دیتای سشن: {total_str}")
+        self.net_stats_label.setText(f"⚡ {speed_str} | سشن: {total_str}")
 
     def scroll_to_track(self, track: Track) -> None:
         self.track_list.scroll_to_track(track.id)
 
     def on_full_search_results(self, chat_id: int, tracks: list[Track], has_more: bool) -> None:
-        """Handle full search results from TelegramService."""
-        logger.debug("on_full_search_results: chat_id=%d, tracks_count=%d, active_chat_id=%s",
-                     chat_id, len(tracks), self._active_chat.id if self._active_chat else None)
-
-        if not self._active_chat:
-            logger.debug("No active chat, ignoring search results")
+        if not self._active_chat or self._active_chat.id != chat_id:
             return
 
-        if self._active_chat.id != chat_id:
-            logger.debug("Search results for wrong chat: expected %d, got %d", self._active_chat.id, chat_id)
-            return
-
-        # Store original tracks if first search
         if not self._is_searching:
             self._original_tracks = list(self.track_list._all_tracks)
             self._is_searching = True
 
         if not tracks:
-            logger.debug("Search returned 0 results, showing placeholder")
             self.placeholder_msg.setText("🔍 نتیجه‌ای برای جستجوی شما یافت نشد!")
             self.content_stack.setCurrentIndex(0)
         else:
-            logger.debug("Search returned %d results, updating track list", len(tracks))
             self.track_list.set_tracks(tracks, has_more=False)
             self.content_stack.setCurrentIndex(1)
-
             current_query = self.search_input.text().strip()
             if current_query:
                 self.track_list.filter_tracks(current_query)
@@ -451,16 +528,11 @@ class MainView(QWidget):
                 self.scroll_to_track(self.player_bar._current_track)
 
     def restore_normal_tracks(self) -> None:
-        """Restore the original track list (before search)."""
-        logger.debug("Restoring normal tracks, is_searching=%s, original_tracks_count=%d",
-                     self._is_searching, len(self._original_tracks))
-
         if self._is_searching and self._original_tracks:
             self.track_list.set_tracks(self._original_tracks, has_more=True)
             self.content_stack.setCurrentIndex(1)
             self._is_searching = False
             self._original_tracks = []
-
             if self.player_bar._current_track:
                 self.scroll_to_track(self.player_bar._current_track)
         else:
@@ -521,10 +593,6 @@ class MainView(QWidget):
         if self._active_chat:
             self.load_more_tracks_requested.emit(self._active_chat.id)
 
-    # ------------------------------------------------------------------
-    # Track Search
-    # ------------------------------------------------------------------
-
     def _on_search_text_changed(self, text: str) -> None:
         self._search_timer.stop()
         if not text.strip():
@@ -540,12 +608,7 @@ class MainView(QWidget):
         query = self.search_input.text().strip()
         if self._active_chat and query:
             self.content_stack.setCurrentIndex(2)
-            logger.debug("Performing full search for chat %d, query='%s'", self._active_chat.id, query)
             self.search_full_requested.emit(str(self._active_chat.id), query)
-
-    # ------------------------------------------------------------------
-    # Chat Search
-    # ------------------------------------------------------------------
 
     def _on_chat_search_text_changed(self, text: str) -> None:
         self._chat_search_timer.stop()
@@ -561,5 +624,4 @@ class MainView(QWidget):
     def _perform_chat_search(self) -> None:
         query = self.chat_search_input.text().strip()
         if query:
-            logger.debug("Performing chat search, query='%s'", query)
             self.chat_search_requested.emit(query)
