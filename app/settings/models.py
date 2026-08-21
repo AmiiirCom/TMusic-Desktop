@@ -17,7 +17,7 @@ class ProxySettings:
 
 @dataclass(slots=True)
 class UserPreferences:
-    """Data model representing persistent application preferences."""
+    """Data model representing persistent application preferences and album copy registry."""
 
     volume: int = 80
     is_muted: bool = False
@@ -30,3 +30,4 @@ class UserPreferences:
     cached_user_profile: dict[str, Any] = field(default_factory=dict)
     downloaded_tracks_map: dict[str, str] = field(default_factory=dict)
     liked_tracks: list[dict[str, Any]] = field(default_factory=list)
+    album_copied_tracks_map: dict[str, int] = field(default_factory=dict)

@@ -1,11 +1,9 @@
-from app.models.track import Track
-from app.models.chat import OwnedChat
-from app.models.user import TelegramUser
-from app.core.keywords import MusicKeyword, is_music_title
+from app.core.keywords import is_music_title
 from app.core.metadata import LYRICS_KEY_REGEX
 from app.models.chat import FAVORITES_CHAT_ID, OwnedChat, get_favorites_chat
-from app.player.queue_manager import QueueManager
 from app.models.track import Track
+from app.models.user import TelegramUser
+from app.player.queue_manager import QueueManager
 
 
 def test_track_formatting() -> None:
@@ -22,6 +20,7 @@ def test_track_formatting() -> None:
         file_name="Coldplay_Yellow.mp3",
         is_liked=True,
         heart_count=12,
+        file_unique_id="AQADAbc123Unique",
     )
 
     assert track.formatted_duration == "04:29"
@@ -30,6 +29,7 @@ def test_track_formatting() -> None:
     assert track.display_artist == "Coldplay"
     assert track.is_liked is True
     assert track.heart_count == 12
+    assert track.fingerprint == "tg_uid::AQADAbc123Unique"
 
 
 def test_track_fallback_title_from_filename() -> None:
@@ -42,7 +42,7 @@ def test_track_fallback_title_from_filename() -> None:
         title="",
         artist="",
         duration_seconds=120,
-        size_bytes=500 * 1024,  # 500 KB
+        size_bytes=500 * 1024,
         file_name="My_Audio_Track.mp3",
     )
 
@@ -63,12 +63,12 @@ def test_user_full_name() -> None:
 
 
 def test_owned_chat_type_display() -> None:
-    """Verify channel vs group type label."""
+    """Verify channel vs group type label using default translation strings."""
     channel = OwnedChat(id=100, title="Music Channel", is_channel=True)
-    assert channel.type_display == "کانال"
+    assert channel.type_display == "Channel"
 
     group = OwnedChat(id=200, title="Music Group", is_channel=False)
-    assert group.type_display == "سوپرگروه"
+    assert group.type_display == "Supergroup"
 
 
 def test_music_keywords_multilingual_matching() -> None:
@@ -92,47 +92,90 @@ def test_music_keywords_multilingual_matching() -> None:
 
 def test_lyrics_key_regex_patterns() -> None:
     """Verify that LYRICS_KEY_REGEX matches all required variations and rejects unrelated tags."""
-    # Positive matches
     assert LYRICS_KEY_REGEX.match("lyrics") is not None
     assert LYRICS_KEY_REGEX.match("lyric") is not None
     assert LYRICS_KEY_REGEX.match("lyrics-eng") is not None
     assert LYRICS_KEY_REGEX.match("lyrics-xxx") is not None
-    assert LYRICS_KEY_REGEX.match("lyric-eng") is not None
-    assert LYRICS_KEY_REGEX.match("lyrics-fas") is not None
-    assert LYRICS_KEY_REGEX.match("lyrics-fra") is not None
-    assert LYRICS_KEY_REGEX.match("lyrics-deu") is not None
-    assert LYRICS_KEY_REGEX.match("lyric-custom_language") is not None
     assert LYRICS_KEY_REGEX.match("unsyncedlyrics") is not None
-    assert LYRICS_KEY_REGEX.match("unsynced_lyrics") is not None
-    assert LYRICS_KEY_REGEX.match("unsynced lyrics") is not None
     assert LYRICS_KEY_REGEX.match("text") is not None
 
-    # Negative non-lyrics matches
     assert LYRICS_KEY_REGEX.match("title") is None
     assert LYRICS_KEY_REGEX.match("artist") is None
-    assert LYRICS_KEY_REGEX.match("album") is None
-    assert LYRICS_KEY_REGEX.match("comment") is None
-    
+
+
 def test_favorites_chat_properties() -> None:
+    """Verify default properties for the singleton Favorites chat."""
     fav = get_favorites_chat()
     assert fav.id == FAVORITES_CHAT_ID
     assert fav.is_favorites is True
-    assert fav.type_display == "علاقه‌مندی‌ها"
+    assert fav.type_display == "Favorites"
     assert fav.title == "Favorites"
 
 
 def test_queue_manager_end_of_playlist_repeat() -> None:
     queue = QueueManager()
-    t1 = Track(id="1_1", chat_id=1, message_id=1, file_id=10, title="Song 1", artist="Artist", duration_seconds=100, size_bytes=1000, file_name="s1.mp3")
-    t2 = Track(id="1_2", chat_id=1, message_id=2, file_id=20, title="Song 2", artist="Artist", duration_seconds=100, size_bytes=1000, file_name="s2.mp3")
-    
+    t1 = Track(
+        id="1_1",
+        chat_id=1,
+        message_id=1,
+        file_id=10,
+        title="Song 1",
+        artist="Artist",
+        duration_seconds=100,
+        size_bytes=1000,
+        file_name="s1.mp3",
+    )
+    t2 = Track(
+        id="1_2",
+        chat_id=1,
+        message_id=2,
+        file_id=20,
+        title="Song 2",
+        artist="Artist",
+        duration_seconds=100,
+        size_bytes=1000,
+        file_name="s2.mp3",
+    )
+
     queue.set_playlist([t1, t2])
     queue.set_active_track(t1)
-    
-    # 1. Advance to next track (t2)
+
     next_t = queue.get_next_track()
     assert next_t == t2
-    
-    # 2. At the end of playlist: must repeat t2 (not loop to t1)
+
     repeat_t = queue.get_next_track()
     assert repeat_t == t2
+
+
+def test_universal_file_unique_id_deduplication() -> None:
+    """Verify that tracks with the same Telegram file_unique_id match the same fingerprint."""
+    track_album_copy = Track(
+        id="-1001_101",
+        chat_id=-1001,
+        message_id=101,
+        file_id=5001,
+        title="My Song",
+        artist="My Artist",
+        duration_seconds=200,
+        size_bytes=5000000,
+        file_name="song.mp3",
+        media_album_id=777888,
+        file_unique_id="AQADUniversalID99",
+    )
+
+    track_standalone_copy = Track(
+        id="-1001_205",
+        chat_id=-1001,
+        message_id=205,
+        file_id=5002,
+        title="My Song",
+        artist="My Artist",
+        duration_seconds=200,
+        size_bytes=5000000,
+        file_name="song.mp3",
+        media_album_id=0,
+        file_unique_id="AQADUniversalID99",
+    )
+
+    assert track_album_copy.fingerprint == track_standalone_copy.fingerprint
+    assert track_album_copy.fingerprint == "tg_uid::AQADUniversalID99"

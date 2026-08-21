@@ -221,7 +221,10 @@ class MainView(QWidget):
         else:
             self.track_list.update_track_reaction(chat_id, message_id, is_liked, heart_count)
 
-        if self.player_bar._current_track and self.player_bar._current_track.id == track_id:
+        if self.player_bar._current_track and (
+            self.player_bar._current_track.id == track_id
+            or self.player_bar._current_track.message_id == message_id
+        ):
             self.player_bar.update_reaction(is_liked, heart_count)
 
     def set_network_stats(self, speed_str: str, total_str: str) -> None:
@@ -330,18 +333,24 @@ class MainView(QWidget):
         is_current_chat = self._active_chat is not None and self._active_chat.id == chat_id
         is_favorites_view = self._is_active_chat_favorites and chat_id == FAVORITES_CHAT_ID
 
-        if is_current_chat or is_favorites_view:
-            self.track_list.remove_tracks(deleted_track_ids)
+        if is_favorites_view:
+            # In Favorites view: remove track completely from favorites
+            self.track_list.remove_tracks(deleted_track_ids, match_fingerprint=True)
             del_set = set(deleted_track_ids)
             self._original_tracks = [t for t in self._original_tracks if t.id not in del_set]
 
             if self.track_list.count() == 0:
-                empty_text = (
-                    self.tr("You have not liked any tracks yet.")
-                    if self._is_active_chat_favorites
-                    else self.tr("No audio tracks found in this playlist.")
-                )
-                self.placeholder_msg.setText(empty_text)
+                self.placeholder_msg.setText(self.tr("You have not liked any tracks yet."))
+                self._switch_content_page(0)
+
+        elif is_current_chat:
+            # In Normal chat view: remove ONLY exact standalone copied message if deleted, DO NOT delete album tracks
+            self.track_list.remove_tracks(deleted_track_ids, match_fingerprint=False)
+            del_set = set(deleted_track_ids)
+            self._original_tracks = [t for t in self._original_tracks if t.id not in del_set]
+
+            if self.track_list.count() == 0:
+                self.placeholder_msg.setText(self.tr("No audio tracks found in this playlist."))
                 self._switch_content_page(0)
 
     def _on_load_more_tracks(self) -> None:

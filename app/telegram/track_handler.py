@@ -106,6 +106,9 @@ class TrackHandler:
     def toggle_track_like(self, chat_id: int, message_id: int, current_liked: bool) -> None:
         self._reaction_handler.toggle_track_like(chat_id, message_id, current_liked)
 
+    def forward_copy_and_like(self, chat_id: int, message_id: int, extra: str) -> None:
+        self._reaction_handler.forward_copy_and_like(chat_id, message_id, extra)
+
     def revert_track_reaction(self, chat_id: int, message_id: int, original_liked: bool) -> None:
         self._reaction_handler.revert_track_reaction(chat_id, message_id, original_liked)
 
@@ -156,7 +159,8 @@ class TrackHandler:
         if not track:
             return
 
-        if track.id not in {t.id for t in state.tracks}:
+        existing_fps = {t.fingerprint for t in state.tracks}
+        if track.fingerprint not in existing_fps and track.id not in {t.id for t in state.tracks}:
             state.tracks.insert(0, track)
             self._on_delta_tracks_prepended(chat_id, [track])
 
@@ -171,11 +175,22 @@ class TrackHandler:
 
     def _parse_messages(self, chat_id: int, messages: list[dict[str, Any]]) -> list[Track]:
         results: list[Track] = []
+        seen_fps: set[str] = set()
         for msg in messages:
             track = parse_message_to_track(chat_id, msg, self._request_cover_download, self._register_file_path)
-            if track:
+            if track and track.fingerprint not in seen_fps:
+                seen_fps.add(track.fingerprint)
                 results.append(track)
         return results
+    
+    def set_track_reaction_state(self, chat_id: int, message_id: int, is_liked: bool, count: int = 0) -> None:
+        """Immediately update in-memory pagination cache without network delay."""
+        state = self._track_pagination.get(chat_id)
+        if state:
+            for idx, t in enumerate(state.tracks):
+                if t.message_id == message_id:
+                    state.tracks[idx] = self._copy_track_with_like(t, is_liked, count)
+                    break
 
     @staticmethod
     def _copy_track_with_like(t: Track, is_liked: bool, heart_count: int) -> Track:
@@ -198,4 +213,6 @@ class TrackHandler:
             cover_path=t.cover_path,
             is_liked=is_liked,
             heart_count=heart_count,
+            media_album_id=t.media_album_id,
+            file_unique_id=t.file_unique_id,
         )

@@ -5,7 +5,7 @@ from pathlib import Path
 
 @dataclass(slots=True, frozen=True)
 class Track:
-    """Domain model representing a music track with HD cover artwork and release date."""
+    """Domain model representing a music track with HD cover artwork and universal deduplication keys."""
 
     id: str  # Unique identifier: "{chat_id}_{message_id}"
     chat_id: int
@@ -25,6 +25,21 @@ class Track:
     cover_path: str | None = None
     is_liked: bool = False
     heart_count: int = 0
+    media_album_id: int = 0
+    file_unique_id: str = ""
+
+    @property
+    def fingerprint(self) -> str:
+        """
+        Multi-tier persistent audio fingerprint for strict deduplication.
+        Uses Telegram's universal file_unique_id (persistent across copies and forwards),
+        falling back to clean metadata if unavailable.
+        """
+        if self.file_unique_id and self.file_unique_id.strip():
+            return f"tg_uid::{self.file_unique_id.strip()}"
+        clean_title = self.display_title.strip().lower()
+        clean_artist = self.display_artist.strip().lower()
+        return f"meta::{clean_title}::{clean_artist}::{self.duration_seconds}::{self.size_bytes}"
 
     @property
     def formatted_duration(self) -> str:

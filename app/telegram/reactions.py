@@ -9,10 +9,8 @@ HEART_EMOJIS = frozenset({
 
 def extract_heart_reaction(message_or_info: dict[str, Any] | None) -> tuple[bool, int]:
     """
-    Extract heart reaction status strictly chosen by the CURRENT authenticated user
-    (is_chosen == True) and the total heart reaction count.
-    
-    If other users liked the message but the current user did not, is_liked will be False.
+    Extract heart reaction status chosen by the authenticated user (is_chosen == True)
+    and aggregate the total heart reaction count across all heart variants.
     """
     if not message_or_info or not isinstance(message_or_info, dict):
         return False, 0
@@ -42,6 +40,9 @@ def extract_heart_reaction(message_or_info: dict[str, Any] | None) -> tuple[bool
     if not isinstance(reactions_list, list):
         return False, 0
 
+    is_chosen_by_me = False
+    total_heart_count = 0
+
     for reaction in reactions_list:
         if not isinstance(reaction, dict):
             continue
@@ -51,9 +52,8 @@ def extract_heart_reaction(message_or_info: dict[str, Any] | None) -> tuple[bool
 
         raw_emoji = str(r_type.get("emoji", "")).replace("\ufe0f", "")
         if raw_emoji in HEART_EMOJIS:
-            count = int(reaction.get("total_count", 0))
-            # STRICT: is_chosen is True ONLY if the current authenticated user added this reaction
-            is_chosen_by_me = bool(reaction.get("is_chosen", False))
-            return is_chosen_by_me, count
+            total_heart_count += int(reaction.get("total_count", 0))
+            if bool(reaction.get("is_chosen", False)):
+                is_chosen_by_me = True
 
-    return False, 0
+    return is_chosen_by_me, total_heart_count

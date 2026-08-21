@@ -23,7 +23,7 @@ __all__ = [
 
 
 class SettingsService:
-    """Manages encrypted user settings, cached chats, and persistent track registry."""
+    """Manages encrypted user settings, cached chats, and persistent track/album-copy registry."""
 
     def __init__(self, config: AppConfig, crypto: CryptoManager) -> None:
         self._config = config
@@ -67,6 +67,7 @@ class SettingsService:
                 cached_user_profile=data.get("cached_user_profile", {}),
                 downloaded_tracks_map=data.get("downloaded_tracks_map", {}),
                 liked_tracks=data.get("liked_tracks", []),
+                album_copied_tracks_map=data.get("album_copied_tracks_map", {}),
             )
             logger.info("Loaded secure encrypted preferences successfully.")
         except Exception as exc:
@@ -85,16 +86,38 @@ class SettingsService:
             "cached_user_profile": self._preferences.cached_user_profile,
             "downloaded_tracks_map": self._preferences.downloaded_tracks_map,
             "liked_tracks": self._preferences.liked_tracks,
+            "album_copied_tracks_map": self._preferences.album_copied_tracks_map,
         }
         self._crypto.save_encrypted_json(self._settings_file, payload)
+
+    # ------------------------------------------------------------------
+    # Album Copied Messages Management
+    # ------------------------------------------------------------------
+
+    def register_album_copied_message(self, key: str, copied_message_id: int) -> None:
+        """Link original album track identifier to newly created standalone message ID."""
+        self._preferences.album_copied_tracks_map[key] = copied_message_id
+        self.save()
+
+    def get_album_copied_message_id(self, key: str) -> int | None:
+        """Retrieve the standalone message ID for an album track."""
+        return self._preferences.album_copied_tracks_map.get(key)
+
+    def remove_album_copied_message(self, key: str) -> None:
+        """Remove album copy mapping after deletion."""
+        if key in self._preferences.album_copied_tracks_map:
+            self._preferences.album_copied_tracks_map.pop(key, None)
+            self.save()
 
     # ------------------------------------------------------------------
     # Liked / Favorites Tracks Management
     # ------------------------------------------------------------------
 
     def get_liked_tracks(self) -> list[Track]:
-        """Retrieve all persisted liked tracks in their exact stable order."""
+        """Retrieve all persisted liked tracks with strict deduplication by universal fingerprint."""
         results: list[Track] = []
+        seen_fingerprints: set[str] = set()
+
         for item in self._preferences.liked_tracks:
             try:
                 minithumb = (
@@ -121,18 +144,18 @@ class SettingsService:
                     cover_path=item.get("cover_path"),
                     is_liked=True,
                     heart_count=item.get("heart_count", 1),
+                    media_album_id=item.get("media_album_id", 0),
+                    file_unique_id=item.get("file_unique_id", ""),
                 )
-                results.append(track)
+                if track.fingerprint not in seen_fingerprints:
+                    seen_fingerprints.add(track.fingerprint)
+                    results.append(track)
             except Exception as exc:
                 logger.debug("Error deserializing liked track: %s", exc)
         return results
 
     def save_liked_track(self, track: Track) -> bool:
-        """
-        Register or update a liked track.
-        Maintains strict position stability if already present.
-        Returns True if newly added, False if updated in-place.
-        """
+        """Register or update a liked track with universal file_unique_id and metadata deduplication."""
         minithumb_str = (
             base64.b64encode(track.minithumbnail_data).decode("ascii")
             if track.minithumbnail_data
@@ -157,13 +180,27 @@ class SettingsService:
             "cover_path": track.cover_path,
             "is_liked": True,
             "heart_count": track.heart_count,
+            "media_album_id": track.media_album_id,
+            "file_unique_id": track.file_unique_id,
         }
 
-        # Check if track already exists to preserve stable order and cover_path
-        existing_idx = next(
-            (i for i, t in enumerate(self._preferences.liked_tracks) if t.get("id") == track.id),
-            None,
-        )
+        existing_idx = None
+        for i, t in enumerate(self._preferences.liked_tracks):
+            if t.get("id") == track.id:
+                existing_idx = i
+                break
+            if track.file_unique_id and t.get("file_unique_id") and t.get("file_unique_id") == track.file_unique_id:
+                existing_idx = i
+                break
+            if (
+                t.get("title", "").strip().lower() == track.title.strip().lower()
+                and t.get("artist", "").strip().lower() == track.artist.strip().lower()
+                and t.get("duration_seconds") == track.duration_seconds
+                and t.get("size_bytes") == track.size_bytes
+            ):
+                existing_idx = i
+                break
+
         if existing_idx is not None:
             old_cover = self._preferences.liked_tracks[existing_idx].get("cover_path")
             if old_cover and not track_dict.get("cover_path"):
@@ -176,15 +213,26 @@ class SettingsService:
             self.save()
             return True
 
-    def remove_liked_track(self, track_id: str) -> None:
-        """Remove an unliked track from persistent storage."""
+    def remove_liked_track(self, track_id: str, fingerprint: str | None = None, file_unique_id: str | None = None) -> None:
+        """Remove liked track by ID, file_unique_id, or audio fingerprint."""
+        def is_match(t: dict[str, Any]) -> bool:
+            if t.get("id") == track_id:
+                return True
+            if file_unique_id and t.get("file_unique_id") and t.get("file_unique_id") == file_unique_id:
+                return True
+            if fingerprint:
+                t_fuid = t.get("file_unique_id", "").strip()
+                t_fp = f"tg_uid::{t_fuid}" if t_fuid else f"meta::{t.get('title', '').strip().lower()}::{t.get('artist', '').strip().lower()}::{t.get('duration_seconds', 0)}::{t.get('size_bytes', 0)}"
+                if t_fp == fingerprint:
+                    return True
+            return False
+
         self._preferences.liked_tracks = [
-            t for t in self._preferences.liked_tracks if t.get("id") != track_id
+            t for t in self._preferences.liked_tracks if not is_match(t)
         ]
         self.save()
 
     def update_liked_track_cover(self, track_id: str, cover_path: str) -> None:
-        """Update cover path for a liked track in persistent storage without reordering."""
         for t in self._preferences.liked_tracks:
             if t.get("id") == track_id:
                 t["cover_path"] = cover_path

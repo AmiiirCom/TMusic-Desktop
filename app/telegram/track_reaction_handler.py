@@ -8,7 +8,7 @@ logger = logging.getLogger("tmusic.telegram.track_reactions")
 
 
 class TrackReactionHandler:
-    """Manages Telegram message heart reactions, optimistic updates, and rollbacks."""
+    """Manages Telegram message heart reactions, standalone album copies, and rollbacks."""
 
     def __init__(
         self,
@@ -38,6 +38,22 @@ class TrackReactionHandler:
             payload["update_recent_reactions"] = True
 
         self._adapter.send(payload)
+
+    def forward_copy_and_like(self, chat_id: int, message_id: int, extra: str) -> None:
+        """Forward single track from album without sender header (send_copy) into same chat."""
+        if not self._adapter.is_loaded:
+            return
+
+        self._adapter.send({
+            "@type": "forwardMessages",
+            "chat_id": chat_id,
+            "from_chat_id": chat_id,
+            "message_ids": [message_id],
+            "send_copy": True,
+            "remove_caption": False,
+            "@extra": extra,
+        })
+        logger.info("Forwarding album track %d as standalone copy into chat %d (extra=%s)", message_id, chat_id, extra)
 
     def revert_track_reaction(self, chat_id: int, message_id: int, original_liked: bool) -> None:
         self._update_track_reaction(chat_id, message_id, original_liked, -1)

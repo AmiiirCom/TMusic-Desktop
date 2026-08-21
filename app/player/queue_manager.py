@@ -33,15 +33,23 @@ class QueueManager(QObject):
         return self._known_tracks.get(file_id)
 
     def set_playlist(self, tracks: list[Track]) -> None:
-        self._playlist = list(tracks)
+        unique: list[Track] = []
+        seen_fps: set[str] = set()
         for t in tracks:
+            if t.fingerprint not in seen_fps:
+                seen_fps.add(t.fingerprint)
+                unique.append(t)
+
+        self._playlist = list(unique)
+        for t in unique:
             self._known_tracks[t.file_id] = t
         if self._current_track:
             self._sync_index(self._current_track.id)
 
     def append_tracks(self, tracks: list[Track]) -> None:
-        existing = {t.id for t in self._playlist}
-        unique = [t for t in tracks if t.id not in existing]
+        existing_fps = {t.fingerprint for t in self._playlist}
+        existing_ids = {t.id for t in self._playlist}
+        unique = [t for t in tracks if t.fingerprint not in existing_fps and t.id not in existing_ids]
         self._playlist.extend(unique)
         for t in unique:
             self._known_tracks[t.file_id] = t
@@ -49,8 +57,9 @@ class QueueManager(QObject):
             self._sync_index(self._current_track.id)
 
     def prepend_tracks(self, tracks: list[Track]) -> None:
-        existing = {t.id for t in self._playlist}
-        unique = [t for t in tracks if t.id not in existing]
+        existing_fps = {t.fingerprint for t in self._playlist}
+        existing_ids = {t.id for t in self._playlist}
+        unique = [t for t in tracks if t.fingerprint not in existing_fps and t.id not in existing_ids]
         if not unique:
             return
         self._playlist = unique + self._playlist
@@ -90,7 +99,6 @@ class QueueManager(QObject):
             self._current_index += 1
             return self._playlist[self._current_index]
         else:
-            # Reached end of playlist: repeat the current/last track
             if 0 <= self._current_index < len(self._playlist):
                 return self._playlist[self._current_index]
             return self._playlist[-1]
@@ -165,6 +173,8 @@ class QueueManager(QObject):
             "cover_path": t.cover_path,
             "is_liked": t.is_liked,
             "heart_count": t.heart_count,
+            "media_album_id": t.media_album_id,
+            "file_unique_id": t.file_unique_id,
         }
         data.update(kwargs)
         return Track(**data)

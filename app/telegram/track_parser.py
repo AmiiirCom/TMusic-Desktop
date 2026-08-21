@@ -13,11 +13,12 @@ def parse_message_to_track(
     request_cover_callback: Callable[[str, int], None] | None = None,
     register_path_callback: Callable[[int, str], None] | None = None,
 ) -> Track | None:
-    """Parse messageAudio or messageDocument into a domain Track instance."""
+    """Parse messageAudio or messageDocument into an independent domain Track instance with universal file_unique_id."""
     content = msg.get("content", {})
     content_type = content.get("@type", "")
     msg_date = msg.get("date", 0)
     msg_id = msg.get("id", 0)
+    media_album_id = int(msg.get("media_album_id", 0))
     track_id = f"{chat_id}_{msg_id}"
 
     is_liked, heart_count = extract_heart_reaction(msg)
@@ -27,6 +28,7 @@ def parse_message_to_track(
         file_obj = audio.get("audio", {})
         local_file = file_obj.get("local", {})
         file_id = file_obj.get("id", 0)
+        file_unique_id = str(file_obj.get("remote", {}).get("unique_id", "")).strip()
         path = local_file.get("path", "")
 
         minithumb = audio.get("album_cover_minithumbnail")
@@ -70,6 +72,8 @@ def parse_message_to_track(
             cover_path=cover_path,
             is_liked=is_liked,
             heart_count=heart_count,
+            media_album_id=media_album_id,
+            file_unique_id=file_unique_id,
         )
 
     elif content_type == "messageDocument":
@@ -81,6 +85,7 @@ def parse_message_to_track(
             file_obj = doc.get("document", {})
             local_file = file_obj.get("local", {})
             file_id = file_obj.get("id", 0)
+            file_unique_id = str(file_obj.get("remote", {}).get("unique_id", "")).strip()
             path = local_file.get("path", "")
 
             minithumb = doc.get("minithumbnail")
@@ -124,6 +129,8 @@ def parse_message_to_track(
                 cover_path=cover_path,
                 is_liked=is_liked,
                 heart_count=heart_count,
+                media_album_id=media_album_id,
+                file_unique_id=file_unique_id,
             )
 
     return None

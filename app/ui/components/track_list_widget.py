@@ -146,6 +146,8 @@ class TrackItemWidget(QWidget):
             cover_path=self._cover_path,
             is_liked=is_liked,
             heart_count=heart_count,
+            media_album_id=self.track.media_album_id,
+            file_unique_id=self.track.file_unique_id,
         )
         self._apply_like_state()
 
@@ -250,6 +252,8 @@ class TrackItemWidget(QWidget):
                     cover_path=cover_path,
                     is_liked=self.track.is_liked,
                     heart_count=self.track.heart_count,
+                    media_album_id=self.track.media_album_id,
+                    file_unique_id=self.track.file_unique_id,
                 )
 
         pixmap = create_rounded_cover_pixmap(
@@ -262,7 +266,7 @@ class TrackItemWidget(QWidget):
 
 
 class TrackListWidget(QListWidget):
-    """List widget with robust widget deletion, fast pagination, and smooth cover transitions."""
+    """List widget with robust multi-tier deduplication, safe item deletion, and instant reactivity."""
 
     track_selected = Signal(Track)
     track_like_toggled = Signal(Track)
@@ -321,7 +325,15 @@ class TrackListWidget(QListWidget):
         event.ignore()
 
     def set_tracks(self, tracks: list[Track], has_more: bool = True) -> None:
-        self._all_tracks = list(tracks)
+        unique_tracks: list[Track] = []
+        seen_fingerprints: set[str] = set()
+
+        for track in tracks:
+            if track.fingerprint not in seen_fingerprints:
+                seen_fingerprints.add(track.fingerprint)
+                unique_tracks.append(track)
+
+        self._all_tracks = unique_tracks
         self._has_more = has_more
         self._is_loading_more = False
         self._populate(self._all_tracks)
@@ -330,8 +342,13 @@ class TrackListWidget(QListWidget):
         self._has_more = has_more
         self._is_loading_more = False
 
+        existing_fps = {t.fingerprint for t in self._all_tracks}
         existing_ids = {t.id for t in self._all_tracks}
-        unique_new = [t for t in new_tracks if t.id not in existing_ids]
+
+        unique_new = [
+            t for t in new_tracks
+            if t.fingerprint not in existing_fps and t.id not in existing_ids
+        ]
         self._all_tracks.extend(unique_new)
 
         if not self._current_query:
@@ -349,9 +366,16 @@ class TrackListWidget(QListWidget):
             self.filter_tracks(self._current_query)
 
     def prepend_tracks(self, new_tracks: list[Track]) -> None:
+        existing_fps = {t.fingerprint for t in self._all_tracks}
         existing_ids = {t.id for t in self._all_tracks}
-        unique_new = [t for t in new_tracks if t.id not in existing_ids]
+
+        unique_new = [
+            t for t in new_tracks
+            if t.fingerprint not in existing_fps and t.id not in existing_ids
+        ]
         if not unique_new:
+            for track in new_tracks:
+                self.update_track_reaction(track.chat_id, track.message_id, track.is_liked, track.heart_count)
             return
 
         self._all_tracks = unique_new + self._all_tracks
@@ -370,31 +394,80 @@ class TrackListWidget(QListWidget):
         else:
             self.filter_tracks(self._current_query)
 
-    def remove_tracks(self, deleted_track_ids: list[str]) -> None:
-        del_set = set(deleted_track_ids)
-        self._all_tracks = [t for t in self._all_tracks if t.id not in del_set]
+    def remove_tracks(self, deleted_track_ids: list[str], match_fingerprint: bool = False) -> None:
+        """
+        Safely remove tracks by exact ID or message_id.
+        match_fingerprint is ONLY True when deleting from Favorites view.
+        """
+        del_set = {tid for tid in deleted_track_ids if tid}
+        if not del_set:
+            return
 
-        for tid in deleted_track_ids:
-            widget = self._track_widgets.pop(tid, None)
-            for i in range(self.count()):
-                item = self.item(i)
-                if item and (item.data(Qt.ItemDataRole.UserRole) == tid or self.itemWidget(item) == widget):
-                    self.removeItemWidget(item)
-                    taken = self.takeItem(i)
-                    if widget:
-                        widget.hide()
-                        widget.setParent(None)
-                        widget.deleteLater()
-                    if taken:
-                        del taken
-                    break
+        del_mids = set()
+        for tid in del_set:
+            parts = tid.split("_")
+            if len(parts) >= 2 and parts[-1].isdigit():
+                del_mids.add(int(parts[-1]))
+
+        del_fps = set()
+        if match_fingerprint:
+            del_fps = {
+                t.fingerprint
+                for t in self._all_tracks
+                if t.id in del_set or t.message_id in del_mids
+            }
+
+        # Filter internal _all_tracks collection
+        self._all_tracks = [
+            t for t in self._all_tracks
+            if t.id not in del_set and t.message_id not in del_mids and (not match_fingerprint or t.fingerprint not in del_fps)
+        ]
+
+        # Safely remove items in reverse order to prevent index-shift glitches
+        for i in reversed(range(self.count())):
+            item = self.item(i)
+            if not item:
+                continue
+
+            item_tid = item.data(Qt.ItemDataRole.UserRole)
+            widget = self.itemWidget(item)
+            widget_tid = widget.track.id if isinstance(widget, TrackItemWidget) else None
+            widget_mid = widget.track.message_id if isinstance(widget, TrackItemWidget) else None
+            widget_fp = widget.track.fingerprint if isinstance(widget, TrackItemWidget) else None
+
+            should_remove = (
+                item_tid in del_set
+                or (widget_tid and widget_tid in del_set)
+                or (widget_mid and widget_mid in del_mids)
+                or (match_fingerprint and widget_fp and widget_fp in del_fps)
+            )
+
+            if should_remove:
+                if item_tid:
+                    self._track_widgets.pop(item_tid, None)
+                if widget_tid:
+                    self._track_widgets.pop(widget_tid, None)
+
+                self.removeItemWidget(item)
+                taken = self.takeItem(i)
+                if widget:
+                    widget.hide()
+                    widget.setParent(None)
+                    widget.deleteLater()
+                if taken:
+                    del taken
+
+        if self._current_query:
+            self.filter_tracks(self._current_query)
 
         self.viewport().update()
 
     def update_track_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
         track_id = f"{chat_id}_{message_id}"
+
+        # 1. Update internal state in _all_tracks
         for idx, t in enumerate(self._all_tracks):
-            if t.id == track_id:
+            if t.id == track_id or t.message_id == message_id:
                 self._all_tracks[idx] = Track(
                     id=t.id,
                     chat_id=t.chat_id,
@@ -414,10 +487,19 @@ class TrackListWidget(QListWidget):
                     cover_path=t.cover_path,
                     is_liked=is_liked,
                     heart_count=heart_count,
+                    media_album_id=t.media_album_id,
+                    file_unique_id=t.file_unique_id,
                 )
                 break
 
+        # 2. Update visual widget (with fallback search by message_id)
         widget = self._track_widgets.get(track_id)
+        if not widget:
+            for w in self._track_widgets.values():
+                if w.track.message_id == message_id or w.track.id == track_id:
+                    widget = w
+                    break
+
         if widget:
             widget.update_reaction(is_liked, heart_count)
 
@@ -443,6 +525,8 @@ class TrackListWidget(QListWidget):
                     cover_path=cover_path,
                     is_liked=t.is_liked,
                     heart_count=t.heart_count,
+                    media_album_id=t.media_album_id,
+                    file_unique_id=t.file_unique_id,
                 )
                 break
 
