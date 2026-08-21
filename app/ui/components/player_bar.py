@@ -144,7 +144,7 @@ class PlayerBar(QFrame):
         self.btn_like.setIconSize(QSize(18, 18))
         self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_like.setEnabled(False)
-        self.btn_like.clicked.connect(self.like_clicked.emit)
+        self.btn_like.clicked.connect(self._on_like_button_clicked)
 
         info_layout.addWidget(self.artwork_badge)
         info_layout.addLayout(meta_layout, stretch=1)
@@ -217,6 +217,10 @@ class PlayerBar(QFrame):
                 self.track_label_clicked.emit()
                 return True
         return super().eventFilter(obj, event)
+
+    def _on_like_button_clicked(self) -> None:
+        if self._current_track:
+            self.like_clicked.emit()
 
     def _open_speed_menu(self) -> None:
         menu = QMenu(self)

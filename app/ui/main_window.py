@@ -1,7 +1,8 @@
 import logging
 from pathlib import Path
 import shutil
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Slot
+from typing import Any
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, Slot
 from PySide6.QtGui import QCloseEvent, QCursor, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,10 +32,12 @@ from app.ui.views.main_view import MainView
 from app.ui.views.proxy_dialog import ProxyDialog
 from app.ui.views.settings_dialog import SettingsDialog
 from app.ui.views.track_info_dialog import TrackInfoDialog
+from app.ui.utils.icons import get_application_icon
 
 logger = logging.getLogger("tmusic.main_window")
 
-RESIZE_BORDER_MARGIN = 6
+# Border margin width (in pixels) for responsive edge resizing
+RESIZE_BORDER_MARGIN = 8
 
 
 def has_saved_telegram_session(config: AppConfig) -> bool:
@@ -45,7 +48,7 @@ def has_saved_telegram_session(config: AppConfig) -> bool:
 class MainWindow(QMainWindow):
     """
     Root frameless application window featuring custom Telegram-styled titlebar,
-    subtle 10px rounded corners, native 8-direction edge resizing, and tray integration.
+    10px rounded corners, native 8-direction edge resizing with global event filtering, and tray integration.
     """
 
     def __init__(
@@ -69,16 +72,18 @@ class MainWindow(QMainWindow):
         self._stream_server = stream_server
         self._tdlib_adapter = tdlib_adapter
         self._is_quitting = False
+        self._is_resizing_cursor_active = False
 
-        # Set frameless window and translucent background for rounded corners
+        # Frameless window configuration
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle(f"{config.app_name} Desktop")
+        self.setWindowIcon(get_application_icon())
         self.resize(1100, 750)
         self.setMinimumSize(850, 560)
         self.setMouseTracking(True)
 
-        # Root Container with subtle rounded border
+        # Root Container
         self._root_widget = QWidget(self)
         self._root_widget.setObjectName("rootContainer")
         self._root_widget.setMouseTracking(True)
@@ -88,7 +93,7 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # 1. Custom Telegram-styled TitleBar
+        # 1. Custom Telegram TitleBar
         self._title_bar = CustomTitleBar(self._config, self)
         self._title_bar.minimize_requested.connect(self.showMinimized)
         self._title_bar.maximize_restore_requested.connect(self._toggle_maximize_restore)
@@ -100,7 +105,7 @@ class MainWindow(QMainWindow):
         self._central_stack.setMouseTracking(True)
 
         self._main_view = MainView(self._config, self)
-        self._login_view = LoginView(self)
+        self._login_view = LoginView(self._config, self)
 
         self._central_stack.addWidget(self._main_view)
         self._central_stack.addWidget(self._login_view)
@@ -123,8 +128,11 @@ class MainWindow(QMainWindow):
         self._telegram.load_cached_state()
         self._apply_saved_proxy()
 
+        # Install global application event filter for reliable 8-direction edge resizing
+        if (app := QApplication.instance()) is not None:
+            app.installEventFilter(self)
+
     def _apply_window_frame_style(self, is_max: bool) -> None:
-        """Apply subtle rounded corners when normal, and sharp edges when maximized."""
         radius = "0px" if is_max else "10px"
         border = "none" if is_max else "1px solid #242f3d"
         self._root_widget.setStyleSheet(f"""
@@ -212,22 +220,26 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
 
     # ------------------------------------------------------------------
-    # 8-Direction Native-like Border Resizing for Frameless Window
+    # Robust 8-Direction Native Border Resizing & Cursor Handling
     # ------------------------------------------------------------------
 
-    def _calculate_resize_edge(self, pos: QPoint) -> Qt.Edge | None:
+    def _calculate_resize_edge(self, global_pos: QPoint) -> Qt.Edge | None:
         if self.isMaximized():
             return None
 
-        m = RESIZE_BORDER_MARGIN
-        rect = self.rect()
-        x, y = pos.x(), pos.y()
-        w, h = rect.width(), rect.height()
+        local_pos = self.mapFromGlobal(global_pos)
+        x, y = local_pos.x(), local_pos.y()
+        w, h = self.width(), self.height()
 
-        on_left = x < m
-        on_right = x > w - m
-        on_top = y < m
-        on_bottom = y > h - m
+        if x < 0 or x > w or y < 0 or y > h:
+            return None
+
+        m = RESIZE_BORDER_MARGIN
+
+        on_left = x <= m
+        on_right = x >= w - m
+        on_top = y <= m
+        on_bottom = y >= h - m
 
         if on_top and on_left:
             return Qt.Edge.TopEdge | Qt.Edge.LeftEdge
@@ -247,28 +259,65 @@ class MainWindow(QMainWindow):
             return Qt.Edge.BottomEdge
         return None
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and not self.isMaximized():
-            edge = self._calculate_resize_edge(event.position().toPoint())
-            if edge and self.windowHandle():
-                self.windowHandle().startSystemResize(edge)
-                return
-        super().mousePressEvent(event)
+    def _update_resize_cursor(self, edge: Qt.Edge | None) -> None:
+        if edge is None:
+            if self._is_resizing_cursor_active:
+                self._is_resizing_cursor_active = False
+                self.unsetCursor()
+            return
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if not self.isMaximized():
-            edge = self._calculate_resize_edge(event.position().toPoint())
-            if edge == (Qt.Edge.TopEdge | Qt.Edge.LeftEdge) or edge == (Qt.Edge.BottomEdge | Qt.Edge.RightEdge):
-                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
-            elif edge == (Qt.Edge.TopEdge | Qt.Edge.RightEdge) or edge == (Qt.Edge.BottomEdge | Qt.Edge.LeftEdge):
-                self.setCursor(Qt.CursorShape.SizeBDiagCursor)
-            elif edge in (Qt.Edge.LeftEdge, Qt.Edge.RightEdge):
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-            elif edge in (Qt.Edge.TopEdge, Qt.Edge.BottomEdge):
-                self.setCursor(Qt.CursorShape.SizeVerCursor)
-            else:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-        super().mouseMoveEvent(event)
+        self._is_resizing_cursor_active = True
+
+        if edge in (
+            Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
+            Qt.Edge.BottomEdge | Qt.Edge.RightEdge,
+        ):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif edge in (
+            Qt.Edge.TopEdge | Qt.Edge.RightEdge,
+            Qt.Edge.BottomEdge | Qt.Edge.LeftEdge,
+        ):
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif edge in (Qt.Edge.LeftEdge, Qt.Edge.RightEdge):
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        elif edge in (Qt.Edge.TopEdge, Qt.Edge.BottomEdge):
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        else:
+            self.unsetCursor()
+            self._is_resizing_cursor_active = False
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Global application event filter catching edge interactions before child widgets swallow them."""
+        if not self.isVisible() or self.isMaximized():
+            if self._is_resizing_cursor_active:
+                self._is_resizing_cursor_active = False
+                self.unsetCursor()
+            return super().eventFilter(watched, event)
+
+        if not isinstance(watched, QWidget) or watched.window() != self:
+            return super().eventFilter(watched, event)
+
+        etype = event.type()
+
+        if etype in (QEvent.Type.MouseMove, QEvent.Type.HoverMove):
+            global_pos = QCursor.pos()
+            edge = self._calculate_resize_edge(global_pos)
+            self._update_resize_cursor(edge)
+
+        elif etype == QEvent.Type.MouseButtonPress:
+            if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.LeftButton:
+                global_pos = event.globalPosition().toPoint()
+                edge = self._calculate_resize_edge(global_pos)
+                if edge is not None:
+                    win_handle = self.windowHandle()
+                    if win_handle and win_handle.startSystemResize(edge):
+                        return True
+
+        elif etype == QEvent.Type.Leave:
+            if watched == self or watched == self._root_widget:
+                self._update_resize_cursor(None)
+
+        return super().eventFilter(watched, event)
 
     def _restore_preferences(self) -> None:
         saved_vol = self._settings.preferences.volume
@@ -291,6 +340,8 @@ class MainWindow(QMainWindow):
             self._telegram.set_online_status(False)
             self._tray.show_message("TMusic", self.tr("Playing in background"))
         else:
+            if (app := QApplication.instance()) is not None:
+                app.removeEventFilter(self)
             event.accept()
 
     def _restore_window(self) -> None:
@@ -324,10 +375,14 @@ class MainWindow(QMainWindow):
             dialog.exec()
 
     def _on_perform_logout(self) -> None:
+        """Completely wipe session, database, logs, and caches (preserving TMusicDownloads) and quit."""
         self._is_quitting = True
-        if self._player.is_playing:
-            self._player.toggle_play_pause()
 
+        # 1. Stop audio playback immediately
+        if self._player.is_playing:
+            self._player.stop()
+
+        # 2. Stop Telegram, Streaming Server and TDLib workers
         try:
             self._telegram.stop()
             self._stream_server.stop()
@@ -335,14 +390,42 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.warning("Shutdown error: %s", exc)
 
-        for dir_path in (self._config.org_data_root, self._config.org_cache_root):
-            if dir_path.exists():
+        # 3. Explicitly shut down logging handlers to release file lock on tmusic.log
+        try:
+            logging.shutdown()
+        except Exception:
+            pass
+
+        # 4. Wipe AppData, TDLib database, cache, and thumbnails (PRESERVING downloads_dir)
+        dirs_to_wipe = [
+            self._config.tdlib_dir,
+            self._config.tdlib_files_dir,
+            self._config.thumb_cache_dir,
+            self._config.cache_dir,
+            self._config.app_data_dir,
+        ]
+
+        for target_dir in dirs_to_wipe:
+            if target_dir.exists():
                 try:
-                    shutil.rmtree(dir_path, ignore_errors=True)
+                    shutil.rmtree(target_dir, ignore_errors=True)
                 except Exception:
                     pass
 
-        QApplication.quit()
+        # Also wipe master org roots if they exist
+        for org_root in (self._config.org_data_root, self._config.org_cache_root):
+            if org_root.exists():
+                try:
+                    shutil.rmtree(org_root, ignore_errors=True)
+                except Exception:
+                    pass
+
+        # 5. Cleanly terminate the application process
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        import sys
+        sys.exit(0)
 
     @Slot(str)
     def _on_connection_state_changed(self, state: str) -> None:

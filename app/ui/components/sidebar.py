@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -19,7 +20,10 @@ from app.ui.utils.pixmaps import create_circular_avatar_pixmap, create_connectio
 
 
 class SidebarWidget(QWidget):
-    """Telegram Desktop styled sidebar housing user profile, channel list, and network metrics."""
+    """
+    Optimized, fully flexible Telegram Desktop styled sidebar capable of resizing
+    from 0px up to 50% window width.
+    """
 
     settings_requested = Signal()
     chat_selected = Signal(OwnedChat)
@@ -27,8 +31,9 @@ class SidebarWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedWidth(300)
-        self.setStyleSheet("background-color: #17212b; border-right: 1px solid #0e1621;")
+        self.setMinimumWidth(0)  # Allows collapsing all the way to 0px
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.setStyleSheet("background-color: #17212b;")
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -36,9 +41,11 @@ class SidebarWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # 1. Top User Header Profile
         user_header = QFrame(self)
         user_header.setObjectName("userHeader")
         user_header.setFixedHeight(68)
+        user_header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         user_header.setStyleSheet("""
             QFrame#userHeader {
                 background-color: #242f3d;
@@ -60,23 +67,22 @@ class SidebarWidget(QWidget):
         """)
 
         user_layout = QHBoxLayout(user_header)
-        user_layout.setContentsMargins(14, 10, 14, 10)
+        user_layout.setContentsMargins(12, 10, 12, 10)
         user_layout.setSpacing(10)
         user_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        self.user_avatar = QLabel()
+        self.user_avatar = QLabel(user_header)
         self.user_avatar.setObjectName("userAvatar")
         self.user_avatar.setFixedSize(42, 42)
         self.user_avatar.setPixmap(create_circular_avatar_pixmap(None, None, "U", 42))
 
-        # Sliding Marquee User Profile Name
-        self.user_name_label = MarqueeLabel(self.tr("Telegram User"), fade_width=12, speed_px_per_sec=24)
+        self.user_name_label = MarqueeLabel(self.tr("Telegram User"), fade_width=12, speed_px_per_sec=24, parent=user_header)
         self.user_name_label.setFixedHeight(22)
         font = QFont("Segoe UI", 10, QFont.Weight.Bold)
         self.user_name_label.setFont(font)
         self.user_name_label.setTextColor("#ffffff")
 
-        btn_settings = QPushButton()
+        btn_settings = QPushButton(user_header)
         btn_settings.setObjectName("btnHeaderAction")
         btn_settings.setFixedSize(34, 34)
         btn_settings.setIcon(get_svg_icon("settings", "#8192a5", 18))
@@ -90,12 +96,14 @@ class SidebarWidget(QWidget):
         user_layout.addWidget(btn_settings)
         layout.addWidget(user_header)
 
+        # 2. Chat Search Input
         chat_search_container = QWidget(self)
         chat_search_container.setFixedHeight(44)
+        chat_search_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         chat_search_layout = QHBoxLayout(chat_search_container)
         chat_search_layout.setContentsMargins(10, 6, 10, 6)
 
-        self.chat_search_input = QLineEdit()
+        self.chat_search_input = QLineEdit(chat_search_container)
         self.chat_search_input.setPlaceholderText(self.tr("Search playlists..."))
         self.chat_search_input.setStyleSheet("""
             QLineEdit {
@@ -113,27 +121,32 @@ class SidebarWidget(QWidget):
         chat_search_layout.addWidget(self.chat_search_input)
         layout.addWidget(chat_search_container)
 
-        section_label = QLabel(self.tr("Your Playlists"))
-        section_label.setFixedHeight(36)
+        # 3. Section Title Label
+        section_label = QLabel(self.tr("Your Playlists"), self)
+        section_label.setFixedHeight(32)
         section_label.setStyleSheet("color: #6ab3f3; font-size: 12px; font-weight: bold; padding-left: 12px;")
         layout.addWidget(section_label)
 
+        # 4. Owned Music Chat List
         self.chat_list = OwnedChatListWidget(self)
+        self.chat_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.chat_list.chat_selected.connect(self.chat_selected.emit)
         layout.addWidget(self.chat_list, stretch=1)
 
+        # 5. Bottom Connection & Network Usage Bar
         stats_bar = QFrame(self)
         stats_bar.setFixedHeight(34)
+        stats_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         stats_bar.setStyleSheet("background-color: #121921; border-top: 1px solid #0e1621;")
         stats_layout = QHBoxLayout(stats_bar)
         stats_layout.setContentsMargins(8, 0, 10, 0)
         stats_layout.setSpacing(8)
 
-        self.shield_badge = QLabel()
+        self.shield_badge = QLabel(stats_bar)
         self.shield_badge.setFixedSize(22, 22)
         self.shield_badge.setStyleSheet("background-color: transparent; border: none;")
 
-        self.net_stats_label = QLabel("Download: 0 KB/s | Session: 0 KB")
+        self.net_stats_label = QLabel("Download: 0 KB/s | Session: 0 KB", stats_bar)
         self.net_stats_label.setStyleSheet("color: #6ab3f3; font-size: 11px;")
 
         stats_layout.addWidget(self.shield_badge)

@@ -1,6 +1,6 @@
+from enum import IntEnum
 import re
 import time
-from enum import IntEnum
 from typing import Any
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import (
@@ -37,9 +37,8 @@ class MarqueeState(IntEnum):
 
 class MarqueeLabel(QWidget):
     """
-    Ultra-smooth, zero-allocation 60fps auto-sliding text label.
-    Features persistent buffer caching, delta-time animation loop,
-    and gradient alpha edge fading with 100% transparent surface.
+    Ultra-smooth, zero-allocation 60fps auto-sliding text label with safe painter instantiation,
+    positive point size font handling, and edge-fading alpha gradient masks.
     """
 
     def __init__(
@@ -60,12 +59,17 @@ class MarqueeLabel(QWidget):
         self._is_rtl = is_rtl_text(text)
         self._alignment = alignment
 
+        # Explicit positive point size font
+        init_font = QFont("Segoe UI")
+        init_font.setPointSize(10)
+        self.setFont(init_font)
+
         self._offset: float = 0.0
         self._state = MarqueeState.IDLE
         self._state_start_time: float = 0.0
         self._last_tick_time: float = 0.0
 
-        # Persistent reusable render buffers (eliminates memory churn in paintEvent)
+        # Persistent reusable render buffers
         self._buffer_pixmap: QPixmap | None = None
         self._left_gradient: QLinearGradient | None = None
         self._right_gradient: QLinearGradient | None = None
@@ -77,7 +81,6 @@ class MarqueeLabel(QWidget):
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.setStyleSheet("background: transparent; background-color: transparent; border: none;")
 
     def setText(self, text: str) -> None:
@@ -97,7 +100,6 @@ class MarqueeLabel(QWidget):
         self.update()
 
     def setAlignment(self, alignment: Qt.AlignmentFlag) -> None:
-        """Set text alignment for static non-overflowing text."""
         self._alignment = alignment
         self.update()
 
@@ -105,14 +107,13 @@ class MarqueeLabel(QWidget):
         return self._alignment
 
     def _reset_and_start(self) -> None:
-        """Reset motion state and start the delta-time animation loop if text overflows."""
         if not self._text or self.width() <= 0:
             self._timer.stop()
             self._state = MarqueeState.IDLE
             self._offset = 0.0
             return
 
-        fm = self.fontMetrics()
+        fm = QFontMetrics(self.font())
         text_width = fm.horizontalAdvance(self._text)
         avail_width = self.width()
 
@@ -132,18 +133,15 @@ class MarqueeLabel(QWidget):
             self._timer.start()
 
     def _on_animation_tick(self) -> None:
-        """Delta-time frame updater delivering smooth constant-velocity motion."""
         if not self.isVisible() or not self._text or self.width() <= 0:
             return
 
         now = time.perf_counter()
         dt = now - self._last_tick_time
         self._last_tick_time = now
-
-        # Clamp delta-time to avoid jumps after window minimization or system pause
         dt = min(dt, 0.05)
 
-        fm = self.fontMetrics()
+        fm = QFontMetrics(self.font())
         text_width = fm.horizontalAdvance(self._text)
         avail_width = self.width()
         overflow = max(0.0, float(text_width - avail_width + self._fade_width))
@@ -185,7 +183,7 @@ class MarqueeLabel(QWidget):
         h = self.height()
         if w > 0 and h > 0:
             self._rebuild_gradients(w, h)
-            self._buffer_pixmap = None  # Recreated lazily on next paint
+            self._buffer_pixmap = None
         self._reset_and_start()
 
     def showEvent(self, event: Any) -> None:
@@ -193,7 +191,6 @@ class MarqueeLabel(QWidget):
         self._reset_and_start()
 
     def _rebuild_gradients(self, w: int, h: int) -> None:
-        """Pre-calculate alpha boundary masks once on resize."""
         self._left_gradient = QLinearGradient(0, 0, self._fade_width, 0)
         self._left_gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
         self._left_gradient.setColorAt(1.0, QColor(0, 0, 0, 255))
@@ -211,24 +208,27 @@ class MarqueeLabel(QWidget):
         if w <= 0 or h <= 0:
             return
 
-        fm = self.fontMetrics()
+        fm = QFontMetrics(self.font())
         text_width = fm.horizontalAdvance(self._text)
         is_overflowing = text_width > w
 
-        # 1. Non-overflowing static text: zero-buffer immediate blit using specified alignment
+        # 1. Non-overflowing static text with safe painter check
         if not is_overflowing:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-            painter.setFont(self.font())
-            painter.setPen(self._text_color)
-            painter.drawText(self.rect(), self._alignment, self._text)
-            painter.end()
+            painter = QPainter()
+            if painter.begin(self):
+                try:
+                    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+                    painter.setFont(self.font())
+                    painter.setPen(self._text_color)
+                    painter.drawText(self.rect(), self._alignment, self._text)
+                finally:
+                    painter.end()
             return
 
         # 2. Overflowing text: render through reusable offscreen buffer
         scale = self.devicePixelRatio()
-        buf_w = int(w * scale)
-        buf_h = int(h * scale)
+        buf_w = max(1, int(w * scale))
+        buf_h = max(1, int(h * scale))
 
         if (
             self._buffer_pixmap is None
@@ -242,31 +242,35 @@ class MarqueeLabel(QWidget):
 
         self._buffer_pixmap.fill(Qt.GlobalColor.transparent)
 
-        buf_painter = QPainter(self._buffer_pixmap)
-        buf_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        buf_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        buf_painter.setFont(self.font())
-        buf_painter.setPen(self._text_color)
+        buf_painter = QPainter()
+        if buf_painter.begin(self._buffer_pixmap):
+            try:
+                buf_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                buf_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+                buf_painter.setFont(self.font())
+                buf_painter.setPen(self._text_color)
 
-        y = (h - fm.height()) // 2 + fm.ascent()
+                y = (h - fm.height()) // 2 + fm.ascent()
 
-        if not self._is_rtl:
-            x = (self._fade_width // 2) - self._offset
-        else:
-            x = (w - text_width - (self._fade_width // 2)) + self._offset
+                if not self._is_rtl:
+                    x = (self._fade_width // 2) - self._offset
+                else:
+                    x = (w - text_width - (self._fade_width // 2)) + self._offset
 
-        buf_painter.drawText(int(x), y, self._text)
+                buf_painter.drawText(int(x), y, self._text)
 
-        # Apply pre-calculated edge alpha masks
-        buf_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-        if self._left_gradient:
-            buf_painter.fillRect(0, 0, self._fade_width, h, self._left_gradient)
-        if self._right_gradient:
-            buf_painter.fillRect(w - self._fade_width, 0, self._fade_width, h, self._right_gradient)
+                buf_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+                if self._left_gradient:
+                    buf_painter.fillRect(0, 0, self._fade_width, h, self._left_gradient)
+                if self._right_gradient:
+                    buf_painter.fillRect(w - self._fade_width, 0, self._fade_width, h, self._right_gradient)
+            finally:
+                buf_painter.end()
 
-        buf_painter.end()
-
-        # Blit buffer to screen with zero latency
-        painter = QPainter(self)
-        painter.drawPixmap(0, 0, self._buffer_pixmap)
-        painter.end()
+        # Blit buffer with safe painter check
+        painter = QPainter()
+        if painter.begin(self):
+            try:
+                painter.drawPixmap(0, 0, self._buffer_pixmap)
+            finally:
+                painter.end()

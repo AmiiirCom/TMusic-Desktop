@@ -28,6 +28,7 @@ class ThemeManager:
             color: {cls.TEXT_PRIMARY};
             selection-background-color: {cls.ACCENT_BLUE};
             selection-color: #ffffff;
+            font-family: 'Segoe UI', 'Vazirmatn', 'Tahoma', sans-serif;
         }}
 
         /* --- Enforce 100% Transparent Backgrounds on all Labels --- */

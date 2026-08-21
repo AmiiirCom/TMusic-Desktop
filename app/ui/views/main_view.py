@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -7,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QProgressBar,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -28,7 +30,10 @@ logger = logging.getLogger("tmusic.ui.mainview")
 
 
 class MainView(QWidget):
-    """Main dashboard combining responsive sidebar, track library view, and animated stack transitions."""
+    """
+    Main dashboard combining responsive resizable sidebar (0% to 50% screen width),
+    track library view, and animated stack transitions.
+    """
 
     chat_selected = Signal(OwnedChat)
     track_selected = Signal(Track)
@@ -56,7 +61,6 @@ class MainView(QWidget):
 
     @property
     def _is_active_chat_favorites(self) -> bool:
-        """Type-safe guard checking if currently selected active chat is Favorites."""
         return self._active_chat is not None and self._active_chat.is_favorites
 
     def _init_ui(self) -> None:
@@ -64,8 +68,26 @@ class MainView(QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        # Splitter with smooth resizable handle
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.splitter.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.splitter.setChildrenCollapsible(True)
+        self.splitter.setHandleWidth(3)
+        self.splitter.setStyleSheet("""
+            QSplitter::handle:horizontal {
+                background-color: #0e1621;
+                border-left: 1px solid #17212b;
+                border-right: 1px solid #17212b;
+            }
+            QSplitter::handle:horizontal:hover {
+                background-color: #2481cc;
+                border-left: 1px solid #2481cc;
+                border-right: 1px solid #2481cc;
+            }
+            QSplitter::handle:horizontal:pressed {
+                background-color: #52a3ff;
+            }
+        """)
 
         # 1. Left Sidebar
         self.sidebar = SidebarWidget(self)
@@ -76,6 +98,7 @@ class MainView(QWidget):
         # 2. Right Content Area
         content_area = QWidget(self)
         content_area.setStyleSheet("background-color: #0e1621;")
+        content_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         content_layout = QVBoxLayout(content_area)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
@@ -87,19 +110,19 @@ class MainView(QWidget):
         header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(16)
 
-        # Sliding Marquee Channel Title in Topbar
         self.selected_chat_title = MarqueeLabel(
             self.tr("No playlist selected"),
             fade_width=20,
             speed_px_per_sec=30,
             alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            parent=self.chat_header,
         )
         self.selected_chat_title.setFixedHeight(24)
         title_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
         self.selected_chat_title.setFont(title_font)
         self.selected_chat_title.setTextColor("#ffffff")
 
-        self.search_input = QLineEdit()
+        self.search_input = QLineEdit(self.chat_header)
         self.search_input.setPlaceholderText(self.tr("Search title or artist..."))
         self.search_input.setFixedWidth(260)
         self.search_input.setStyleSheet("""
@@ -158,13 +181,18 @@ class MainView(QWidget):
 
         content_layout.addWidget(self.content_stack)
 
-        splitter.addWidget(self.sidebar)
-        splitter.addWidget(content_area)
-        splitter.setSizes([280, 720])
-        root_layout.addWidget(splitter, stretch=1)
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(content_area)
+        self.splitter.setSizes([280, 720])
+        root_layout.addWidget(self.splitter, stretch=1)
 
         self.player_bar = PlayerBar(self._config, self)
         root_layout.addWidget(self.player_bar)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        max_sidebar_w = max(120, int(self.width() * 0.50))
+        self.sidebar.setMaximumWidth(max_sidebar_w)
 
     def _init_timers(self) -> None:
         self._search_timer = QTimer(self)
@@ -223,7 +251,7 @@ class MainView(QWidget):
 
         if self.player_bar._current_track and (
             self.player_bar._current_track.id == track_id
-            or self.player_bar._current_track.message_id == message_id
+            or (self.player_bar._current_track.chat_id == chat_id and self.player_bar._current_track.message_id == message_id)
         ):
             self.player_bar.update_reaction(is_liked, heart_count)
 
@@ -285,7 +313,6 @@ class MainView(QWidget):
         self.sidebar.chat_list.set_active_chat(chat.id)
 
     def _switch_content_page(self, index: int) -> None:
-        """Switch content stack page with smooth fade-in animation."""
         if self.content_stack.currentIndex() != index:
             self.content_stack.setCurrentIndex(index)
             fade_in_widget(self.content_stack.currentWidget(), duration_ms=160)
@@ -334,7 +361,6 @@ class MainView(QWidget):
         is_favorites_view = self._is_active_chat_favorites and chat_id == FAVORITES_CHAT_ID
 
         if is_favorites_view:
-            # In Favorites view: remove track completely from favorites
             self.track_list.remove_tracks(deleted_track_ids, match_fingerprint=True)
             del_set = set(deleted_track_ids)
             self._original_tracks = [t for t in self._original_tracks if t.id not in del_set]
@@ -344,7 +370,6 @@ class MainView(QWidget):
                 self._switch_content_page(0)
 
         elif is_current_chat:
-            # In Normal chat view: remove ONLY exact standalone copied message if deleted, DO NOT delete album tracks
             self.track_list.remove_tracks(deleted_track_ids, match_fingerprint=False)
             del_set = set(deleted_track_ids)
             self._original_tracks = [t for t in self._original_tracks if t.id not in del_set]

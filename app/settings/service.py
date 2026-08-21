@@ -2,6 +2,7 @@ import base64
 from dataclasses import asdict
 import logging
 from pathlib import Path
+import threading
 from typing import Any
 
 from app.config import AppConfig
@@ -23,22 +24,61 @@ __all__ = [
 
 
 class SettingsService:
-    """Manages encrypted user settings, cached chats, and persistent track/album-copy registry."""
+    """Manages encrypted user settings, fast in-memory liked indexes, and async disk persistence."""
 
     def __init__(self, config: AppConfig, crypto: CryptoManager) -> None:
         self._config = config
         self._crypto = crypto
         self._settings_file = config.settings_file
         self._preferences = UserPreferences()
+        self._save_lock = threading.Lock()
+
+        # In-memory O(1) fast lookup sets for liked tracks
+        self._liked_ids: set[str] = set()
+        self._liked_unique_ids: set[str] = set()
+        self._liked_fingerprints: set[str] = set()
+
         self.load()
 
     @property
     def preferences(self) -> UserPreferences:
         return self._preferences
 
+    def _rebuild_liked_indexes(self) -> None:
+        """Rebuild fast in-memory O(1) lookup sets from preferences."""
+        self._liked_ids.clear()
+        self._liked_unique_ids.clear()
+        self._liked_fingerprints.clear()
+
+        for item in self._preferences.liked_tracks:
+            tid = item.get("id")
+            if tid:
+                self._liked_ids.add(tid)
+            fuid = str(item.get("file_unique_id", "")).strip()
+            if fuid:
+                self._liked_unique_ids.add(fuid)
+                self._liked_fingerprints.add(f"tg_uid::{fuid}")
+            else:
+                title = str(item.get("title", "")).strip().lower()
+                artist = str(item.get("artist", "")).strip().lower()
+                dur = item.get("duration_seconds", 0)
+                size = item.get("size_bytes", 0)
+                self._liked_fingerprints.add(f"meta::{title}::{artist}::{dur}::{size}")
+
+    def is_track_liked(self, track_id: str, fingerprint: str = "", file_unique_id: str = "") -> bool:
+        """Fast O(1) in-memory check if a track is liked."""
+        if track_id in self._liked_ids:
+            return True
+        if file_unique_id and file_unique_id.strip() in self._liked_unique_ids:
+            return True
+        if fingerprint and fingerprint in self._liked_fingerprints:
+            return True
+        return False
+
     def load(self) -> None:
         data = self._crypto.load_encrypted_json(self._settings_file)
         if not data:
+            self._rebuild_liked_indexes()
             return
 
         try:
@@ -69,11 +109,14 @@ class SettingsService:
                 liked_tracks=data.get("liked_tracks", []),
                 album_copied_tracks_map=data.get("album_copied_tracks_map", {}),
             )
+            self._rebuild_liked_indexes()
             logger.info("Loaded secure encrypted preferences successfully.")
         except Exception as exc:
             logger.warning("Error parsing settings data: %s", exc)
+            self._rebuild_liked_indexes()
 
-    def save(self) -> None:
+    def save(self, async_save: bool = True) -> None:
+        """Save settings payload to disk asynchronously to prevent UI stutter."""
         payload: dict[str, Any] = {
             "volume": self._preferences.volume,
             "is_muted": self._preferences.is_muted,
@@ -88,23 +131,36 @@ class SettingsService:
             "liked_tracks": self._preferences.liked_tracks,
             "album_copied_tracks_map": self._preferences.album_copied_tracks_map,
         }
-        self._crypto.save_encrypted_json(self._settings_file, payload)
+
+        if async_save:
+            threading.Thread(
+                target=self._perform_save_payload,
+                args=(payload,),
+                daemon=True,
+                name="SettingsAsyncSave",
+            ).start()
+        else:
+            self._perform_save_payload(payload)
+
+    def _perform_save_payload(self, payload: dict[str, Any]) -> None:
+        with self._save_lock:
+            try:
+                self._crypto.save_encrypted_json(self._settings_file, payload)
+            except Exception as exc:
+                logger.error("Error saving settings payload: %s", exc)
 
     # ------------------------------------------------------------------
     # Album Copied Messages Management
     # ------------------------------------------------------------------
 
     def register_album_copied_message(self, key: str, copied_message_id: int) -> None:
-        """Link original album track identifier to newly created standalone message ID."""
         self._preferences.album_copied_tracks_map[key] = copied_message_id
         self.save()
 
     def get_album_copied_message_id(self, key: str) -> int | None:
-        """Retrieve the standalone message ID for an album track."""
         return self._preferences.album_copied_tracks_map.get(key)
 
     def remove_album_copied_message(self, key: str) -> None:
-        """Remove album copy mapping after deletion."""
         if key in self._preferences.album_copied_tracks_map:
             self._preferences.album_copied_tracks_map.pop(key, None)
             self.save()
@@ -155,7 +211,7 @@ class SettingsService:
         return results
 
     def save_liked_track(self, track: Track) -> bool:
-        """Register or update a liked track with universal file_unique_id and metadata deduplication."""
+        """Register or update a liked track and update in-memory indexes instantly."""
         minithumb_str = (
             base64.b64encode(track.minithumbnail_data).decode("ascii")
             if track.minithumbnail_data
@@ -201,20 +257,22 @@ class SettingsService:
                 existing_idx = i
                 break
 
+        is_new = False
         if existing_idx is not None:
             old_cover = self._preferences.liked_tracks[existing_idx].get("cover_path")
             if old_cover and not track_dict.get("cover_path"):
                 track_dict["cover_path"] = old_cover
             self._preferences.liked_tracks[existing_idx] = track_dict
-            self.save()
-            return False
         else:
             self._preferences.liked_tracks.insert(0, track_dict)
-            self.save()
-            return True
+            is_new = True
+
+        self._rebuild_liked_indexes()
+        self.save()
+        return is_new
 
     def remove_liked_track(self, track_id: str, fingerprint: str | None = None, file_unique_id: str | None = None) -> None:
-        """Remove liked track by ID, file_unique_id, or audio fingerprint."""
+        """Remove liked track by ID, file_unique_id, or audio fingerprint instantly."""
         def is_match(t: dict[str, Any]) -> bool:
             if t.get("id") == track_id:
                 return True
@@ -230,6 +288,7 @@ class SettingsService:
         self._preferences.liked_tracks = [
             t for t in self._preferences.liked_tracks if not is_match(t)
         ]
+        self._rebuild_liked_indexes()
         self.save()
 
     def update_liked_track_cover(self, track_id: str, cover_path: str) -> None:

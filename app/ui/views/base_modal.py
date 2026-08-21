@@ -102,10 +102,10 @@ class BaseModalDialog(QDialog):
         header_layout = QHBoxLayout(self.header_bar)
         header_layout.setContentsMargins(18, 0, 14, 0)
 
-        self.modal_title = QLabel(title)
+        self.modal_title = QLabel(title, self.header_bar)
         self.modal_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #6ab3f3;")
 
-        self.btn_close_modal = QPushButton()
+        self.btn_close_modal = QPushButton(self.header_bar)
         self.btn_close_modal.setObjectName("modalCloseBtn")
         self.btn_close_modal.setIcon(get_svg_icon("close", "#7f91a4", 16))
         self.btn_close_modal.setIconSize(QSize(16, 16))
@@ -127,25 +127,25 @@ class BaseModalDialog(QDialog):
 
         root_layout.addWidget(self.card_frame)
 
-        # Entire dialog opacity effect
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._opacity_effect)
         self._opacity_effect.setOpacity(0.0)
 
     def paintEvent(self, event: Any) -> None:
-        """Render anti-aliased backdrop matching the main window's rounded corners."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        """Render anti-aliased backdrop with safe painter begin/end check."""
+        painter = QPainter()
+        if painter.begin(self):
+            try:
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                parent = self.parentWidget()
+                is_max = parent.window().isMaximized() if parent else False
+                radius = 0.0 if is_max else 10.0
 
-        # Check if the host window is maximized to adjust corner radius
-        parent = self.parentWidget()
-        is_max = parent.window().isMaximized() if parent else False
-        radius = 0.0 if is_max else 10.0
-
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), radius, radius)
-        painter.fillPath(path, QColor(0, 0, 0, 160))
-        painter.end()
+                path = QPainterPath()
+                path.addRoundedRect(QRectF(self.rect()), radius, radius)
+                painter.fillPath(path, QColor(0, 0, 0, 160))
+            finally:
+                painter.end()
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
@@ -164,7 +164,6 @@ class BaseModalDialog(QDialog):
         self._fade_anim.start()
 
     def _finish_close(self, result_code: int) -> None:
-        """Ensure modal dialog is cleanly closed and event loop dismissed."""
         super().done(result_code)
 
     def reject(self) -> None:

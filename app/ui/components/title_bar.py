@@ -1,10 +1,11 @@
 from typing import Any
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QWindow
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QWidget,
 )
 
@@ -14,9 +15,8 @@ from app.ui.utils.icons import get_app_logo_pixmap, get_svg_icon
 
 class CustomTitleBar(QWidget):
     """
-    Sleek, responsive custom TitleBar modeled after Telegram Desktop.
-    Supports native Windows Aero-Snap dragging, double-click maximize/restore,
-    and vector window control buttons with subtle rounded corners.
+    Optimized Telegram Desktop styled Custom TitleBar with native window movement,
+    smooth double-click maximize/restore, and vector controls.
     """
 
     minimize_requested = Signal()
@@ -27,8 +27,9 @@ class CustomTitleBar(QWidget):
         super().__init__(parent)
         self._config = config
         self._parent_window = parent
-        self.setFixedHeight(36)
+        self.setFixedHeight(38)
         self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._is_maximized = False
         self._drag_start_pos: QPoint | None = None
 
@@ -37,21 +38,24 @@ class CustomTitleBar(QWidget):
     def _init_ui(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        # 1. Left Section: Vector Logo & Application Title
-        self.app_icon = QLabel()
-        self.app_icon.setFixedSize(18, 18)
-        self.app_icon.setPixmap(get_app_logo_pixmap(size=18))
+        # Left Section: Vector Logo & Title
+        self.app_icon = QLabel(self)
+        self.app_icon.setFixedSize(20, 20)
+        self.app_icon.setPixmap(get_app_logo_pixmap(size=20))
+        self.app_icon.setStyleSheet("background: transparent; border: none;")
 
-        self.title_label = QLabel(self._config.app_full_name)
+        self.title_label = QLabel(self._config.app_full_name, self)
+        self.title_label.setStyleSheet("background: transparent; color: #8192a5; font-size: 12px; font-weight: 600;")
 
         layout.addWidget(self.app_icon)
         layout.addWidget(self.title_label)
-        layout.addStretch()
+        layout.addStretch(1)
 
-        # 2. Right Section: Window Controls
-        self.btn_min = QPushButton()
+        # Right Section: Window Control Buttons
+        self.btn_min = QPushButton(self)
         self.btn_min.setObjectName("btnTitleControl")
         self.btn_min.setIcon(get_svg_icon("window_minimize", "#8192a5", 14))
         self.btn_min.setIconSize(QSize(14, 14))
@@ -59,7 +63,7 @@ class CustomTitleBar(QWidget):
         self.btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_min.clicked.connect(self.minimize_requested.emit)
 
-        self.btn_max = QPushButton()
+        self.btn_max = QPushButton(self)
         self.btn_max.setObjectName("btnTitleControl")
         self.btn_max.setIcon(get_svg_icon("window_maximize", "#8192a5", 13))
         self.btn_max.setIconSize(QSize(13, 13))
@@ -67,7 +71,7 @@ class CustomTitleBar(QWidget):
         self.btn_max.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_max.clicked.connect(self.maximize_restore_requested.emit)
 
-        self.btn_close = QPushButton()
+        self.btn_close = QPushButton(self)
         self.btn_close.setObjectName("btnTitleClose")
         self.btn_close.setIcon(get_svg_icon("close", "#8192a5", 14))
         self.btn_close.setIconSize(QSize(14, 14))
@@ -90,20 +94,13 @@ class CustomTitleBar(QWidget):
                 border-top-right-radius: {radius};
                 border-bottom: 1px solid #0e1621;
             }}
-            QLabel {{
-                background: transparent;
-                color: #8192a5;
-                font-family: 'Segoe UI', 'Vazirmatn', sans-serif;
-                font-size: 12px;
-                font-weight: 600;
-            }}
             QPushButton#btnTitleControl {{
                 background-color: transparent;
                 border: none;
                 min-width: 44px;
                 max-width: 44px;
-                min-height: 35px;
-                max-height: 35px;
+                min-height: 37px;
+                max-height: 37px;
                 padding: 0px;
             }}
             QPushButton#btnTitleControl:hover {{
@@ -118,8 +115,8 @@ class CustomTitleBar(QWidget):
                 border-top-right-radius: {radius};
                 min-width: 44px;
                 max-width: 44px;
-                min-height: 35px;
-                max-height: 35px;
+                min-height: 37px;
+                max-height: 37px;
                 padding: 0px;
             }}
             QPushButton#btnTitleClose:hover {{
@@ -131,7 +128,6 @@ class CustomTitleBar(QWidget):
         """)
 
     def set_maximized(self, is_max: bool) -> None:
-        """Update window state icon and border radius dynamically."""
         self._is_maximized = is_max
         self._apply_style(is_max)
         if is_max:

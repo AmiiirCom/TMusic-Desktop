@@ -21,12 +21,26 @@ class TrackReactionHandler:
         self._on_track_reaction_updated = on_track_reaction_updated
 
     def toggle_track_like(self, chat_id: int, message_id: int, current_liked: bool) -> None:
-        if not self._adapter.is_loaded:
+        """Send direct reaction to Telegram message via TDLib."""
+        if not self._adapter.is_loaded or chat_id == 0 or message_id == 0:
             return
+
+        # Ensure TDLib has viewed the message so reaction is accepted
+        try:
+            self._adapter.send({
+                "@type": "viewMessages",
+                "chat_id": chat_id,
+                "message_ids": [message_id],
+                "force_read": False,
+            })
+        except Exception:
+            pass
 
         extra = f"react_{chat_id}_{message_id}_{0 if current_liked else 1}"
         action = "removeMessageReaction" if current_liked else "addMessageReaction"
-        payload = {
+
+        # Canonical TDLib red heart emoji string without variation selector
+        payload: dict[str, Any] = {
             "@type": action,
             "chat_id": chat_id,
             "message_id": message_id,
@@ -38,10 +52,11 @@ class TrackReactionHandler:
             payload["update_recent_reactions"] = True
 
         self._adapter.send(payload)
+        logger.info("Sent TDLib %s (chat_id=%d, message_id=%d)", action, chat_id, message_id)
 
     def forward_copy_and_like(self, chat_id: int, message_id: int, extra: str) -> None:
-        """Forward single track from album without sender header (send_copy) into same chat."""
-        if not self._adapter.is_loaded:
+        """Forward single track from album without sender header (send_copy) into the same chat."""
+        if not self._adapter.is_loaded or chat_id == 0 or message_id == 0:
             return
 
         self._adapter.send({

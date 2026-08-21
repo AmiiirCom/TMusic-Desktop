@@ -37,7 +37,8 @@ def setup_application_fonts(app: QApplication, resources_dir: Path) -> None:
             logger.debug("Registered font family: %s", families)
 
     # Apply Vazirmatn / Segoe UI as the default Qt Application font with valid positive point size (10pt)
-    app_font = QFont("Segoe UI", 10)
-    app_font.setFamilies(["Segoe UI", "Vazirmatn", "Tahoma", "Arial"])
+    app_font = QFont("Segoe UI")
+    app_font.setPointSize(10)
+    app_font.setFamilies(["Vazirmatn", "Segoe UI", "Tahoma", "Arial"])
     app_font.setStyleHint(QFont.StyleHint.SansSerif)
     app.setFont(app_font)

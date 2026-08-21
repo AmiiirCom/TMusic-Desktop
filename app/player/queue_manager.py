@@ -134,11 +134,14 @@ class QueueManager(QObject):
     def update_reaction(self, chat_id: int, message_id: int, is_liked: bool, heart_count: int) -> None:
         track_id = f"{chat_id}_{message_id}"
         for idx, t in enumerate(self._playlist):
-            if t.id == track_id:
+            if t.id == track_id or (t.chat_id == chat_id and t.message_id == message_id):
                 updated = self._clone_track(t, is_liked=is_liked, heart_count=heart_count)
                 self._playlist[idx] = updated
                 self._known_tracks[t.file_id] = updated
-                if self._current_track and self._current_track.id == track_id:
+                if self._current_track and (
+                    self._current_track.id == track_id
+                    or (self._current_track.chat_id == chat_id and self._current_track.message_id == message_id)
+                ):
                     self._current_track = updated
                 break
 

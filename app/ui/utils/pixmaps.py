@@ -21,7 +21,7 @@ TELEGRAM_AVATAR_PALETTE: tuple[str, ...] = (
 
 def get_chat_avatar_color(chat_id: int) -> str:
     if chat_id == FAVORITES_CHAT_ID:
-        return "#e53935"  # Vibrant Coral Red for Favorites
+        return "#e53935"
     idx = abs(chat_id) % len(TELEGRAM_AVATAR_PALETTE)
     return TELEGRAM_AVATAR_PALETTE[idx]
 
@@ -44,7 +44,6 @@ def create_chat_avatar_pixmap(title: str, chat_id: int, size: int = 42) -> QPixm
     painter.fillRect(0, 0, render_size, render_size, bg_color)
 
     if chat_id == FAVORITES_CHAT_ID:
-        # Perfectly centered crisp vector heart for Favorites playlist
         icon_dim = render_size * 0.50
         ix = (render_size - icon_dim) / 2.0
         iy = (render_size - icon_dim) / 2.0
@@ -52,7 +51,9 @@ def create_chat_avatar_pixmap(title: str, chat_id: int, size: int = 42) -> QPixm
     else:
         letter = title.strip()[:1].upper() if title.strip() else "C"
         painter.setPen(QColor("#ffffff"))
-        font = QFont("Segoe UI", 16 * scale, QFont.Weight.Bold)
+        font = QFont("Segoe UI")
+        font.setPointSize(max(1, int(16 * scale)))
+        font.setBold(True)
         painter.setFont(font)
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
 
@@ -113,7 +114,9 @@ def create_circular_avatar_pixmap(
     if not has_drawn:
         painter.fillRect(0, 0, render_size, render_size, QColor("#2b5278"))
         painter.setPen(QColor("#ffffff"))
-        font = QFont("Segoe UI", 15 * scale, QFont.Weight.Bold)
+        font = QFont("Segoe UI")
+        font.setPointSize(max(1, int(15 * scale)))
+        font.setBold(True)
         painter.setFont(font)
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, initial)
 
@@ -176,7 +179,6 @@ def create_rounded_cover_pixmap(
             painter.drawPixmap(0, 0, scaled.copy(x, y, render_size, render_size))
             has_drawn = True
 
-    # Crisp Vector SVG Fallback with perfect optical centering
     if not has_drawn:
         bg_color = QColor("#2481cc" if is_active else "#28384b")
         painter.fillRect(0, 0, render_size, render_size, bg_color)
@@ -185,7 +187,6 @@ def create_rounded_cover_pixmap(
         iy = (render_size - icon_dim) / 2.0
         render_svg_to_painter(painter, "music", QRectF(ix, iy, icon_dim, icon_dim), color="#ffffff")
 
-    # Crisp Vector Equalizer Badge for active playing track
     if is_active:
         badge_size = 18 * scale
         badge_x = render_size - badge_size - (3 * scale)
@@ -246,7 +247,9 @@ def create_connection_shield_pixmap(status: str = "ready", is_proxy: bool = Fals
     painter.drawPath(shield_path)
 
     painter.setPen(QColor("#ffffff" if status == "ready" else "#7f91a4"))
-    font = QFont("Segoe UI", 8 * scale, QFont.Weight.Bold)
+    font = QFont("Segoe UI")
+    font.setPointSize(max(1, int(8 * scale)))
+    font.setBold(True)
     painter.setFont(font)
     painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, badge_symbol)
 

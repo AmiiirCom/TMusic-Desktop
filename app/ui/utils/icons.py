@@ -2,22 +2,18 @@ from PySide6.QtCore import QByteArray, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-# Valid W3C SVG vector icons with 0 truncation errors
+# Valid W3C SVG vector icons with zero truncation errors
 SVG_ICONS: dict[str, str] = {
     "app_logo": (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">'
-        '<circle cx="50" cy="50" r="46" fill="url(#grad)" stroke="#ffffff" stroke-width="2.5"/>'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">'
         '<defs>'
-        '<linearGradient id="grad" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">'
-        '<stop offset="0%" stop-color="#2a96e8"/>'
-        '<stop offset="100%" stop-color="#196cb3"/>'
+        '<linearGradient id="linear-gradient" x1="32" y1="992" x2="992" y2="32" gradientUnits="userSpaceOnUse">'
+        '<stop offset="0%" stop-color="#1c92d2"/>'
+        '<stop offset="100%" stop-color="#45a7dc"/>'
         '</linearGradient>'
         '</defs>'
-        '<path d="M40 68V34l28-7v34" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>'
-        '<circle cx="33" cy="68" r="8" fill="#ffffff"/>'
-        '<circle cx="61" cy="61" r="8" fill="#ffffff"/>'
-        '<path d="M72 44c4 3 6 8 6 13" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" opacity="0.8"/>'
-        '<path d="M78 37c7 5 11 13 11 20" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" opacity="0.5"/>'
+        '<circle cx="512" cy="512" r="480" fill="url(#linear-gradient)"/>'
+        '<path fill="#f3fbfe" fill-rule="evenodd" d="M505.778,704.934c0,28.5-17.08,54.456-41.759,73.458-24.046,18.988-55.687,30.392-83.518,30.392-17.724,0-34.175-5.7-45.556-15.2-12.021-9.5-18.987-23.421-18.987-39.884,0-25.959,17.714-51.932,41.76-70.92,24.046-19.635,54.413-32.3,79.719-32.3,22.153,0,41.129,3.169,52.521,13.926V176.2h15.82c1.263,22.79,5.059,54.456,32.271,79.151,31,27.22,59.473,54.457,79.09,79.152,25.939,32.3,44.282,72.814,44.282,113.973a234,234,0,0,1-8.855,62.688,153.346,153.346,0,0,1,16.45,70.289c0,44.328-13.284,81.057-31.641,111.448H627.257c13.284-20.265,29.105-68.382,27.845-98.786-1.276-33.558-3.8-53.18-25.309-79.783-24.676-30.388-88.588-62.054-124.015-86.752V704.934ZM644.97,454.818c-1.262-33.56-17.713-59.52-39.223-86.122-24.675-30.392-64.542-55.718-99.969-75.983,1.263,45.591,31,91.816,58.21,116.511,31,27.223,46.188,41.792,64.532,64.582a221.944,221.944,0,0,1,15.188,21.54C644.97,482.038,645.6,465.574,644.97,454.818Z"/>'
         '</svg>'
     ),
     "window_minimize": (
@@ -229,3 +225,14 @@ def get_app_logo_pixmap(size: int = 80) -> QPixmap:
 
     pixmap.setDevicePixelRatio(scale)
     return pixmap
+
+def get_application_icon() -> QIcon:
+    """
+    Generate a high-DPI multi-resolution QIcon (16px to 512px) from the official vector app_logo
+    for Taskbar, Alt+Tab, and OS window decorations.
+    """
+    icon = QIcon()
+    for size in (16, 20, 24, 32, 48, 64, 128, 256, 512):
+        pixmap = get_app_logo_pixmap(size=size)
+        icon.addPixmap(pixmap)
+    return icon

@@ -15,18 +15,70 @@ CIPHERTEXT_VERSION_V1 = b"\x01"
 
 
 class DATA_BLOB(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+    _fields_ = [
+        ("cbData", wintypes.DWORD),
+        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+def _setup_windows_dpapi():
+    """Setup explicit 64-bit argtypes and restype for Windows DPAPI to prevent pointer truncation."""
+    if platform.system() != "Windows":
+        return None, None
+
+    try:
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+
+        crypt32.CryptProtectData.argtypes = [
+            ctypes.POINTER(DATA_BLOB),
+            wintypes.LPCWSTR,
+            ctypes.POINTER(DATA_BLOB),
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(DATA_BLOB),
+        ]
+        crypt32.CryptProtectData.restype = wintypes.BOOL
+
+        crypt32.CryptUnprotectData.argtypes = [
+            ctypes.POINTER(DATA_BLOB),
+            ctypes.POINTER(wintypes.LPWSTR),
+            ctypes.POINTER(DATA_BLOB),
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(DATA_BLOB),
+        ]
+        crypt32.CryptUnprotectData.restype = wintypes.BOOL
+
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel32.LocalFree.restype = ctypes.c_void_p
+
+        return crypt32, kernel32
+    except Exception as exc:
+        logger.warning("Failed to configure 64-bit Windows DPAPI types: %s", exc)
+        return None, None
+
+
+_CRYPT32, _KERNEL32 = _setup_windows_dpapi()
 
 
 def _protect_bytes_windows(data: bytes) -> bytes:
-    """Protect master key with Windows DPAPI (CryptProtectData)."""
+    """Protect master key using 64-bit safe Windows DPAPI (CryptProtectData)."""
+    if not _CRYPT32 or not _KERNEL32:
+        return data
+
     try:
-        crypt32 = ctypes.windll.crypt32
-        in_blob = DATA_BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data), ctypes.POINTER(ctypes.c_byte)))
+        in_bytes = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
+        in_blob = DATA_BLOB(len(data), ctypes.cast(in_bytes, ctypes.POINTER(ctypes.c_ubyte)))
         out_blob = DATA_BLOB()
-        if crypt32.CryptProtectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+
+        if _CRYPT32.CryptProtectData(
+            ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+        ):
             result = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-            ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+            _KERNEL32.LocalFree(out_blob.pbData)
             return result
     except Exception as exc:
         logger.warning("Windows DPAPI protect failed, using raw key: %s", exc)
@@ -34,14 +86,20 @@ def _protect_bytes_windows(data: bytes) -> bytes:
 
 
 def _unprotect_bytes_windows(protected_data: bytes) -> bytes:
-    """Unprotect master key with Windows DPAPI (CryptUnprotectData)."""
+    """Unprotect master key using 64-bit safe Windows DPAPI (CryptUnprotectData)."""
+    if not _CRYPT32 or not _KERNEL32:
+        return protected_data
+
     try:
-        crypt32 = ctypes.windll.crypt32
-        in_blob = DATA_BLOB(len(protected_data), ctypes.cast(ctypes.create_string_buffer(protected_data), ctypes.POINTER(ctypes.c_byte)))
+        in_bytes = (ctypes.c_ubyte * len(protected_data)).from_buffer_copy(protected_data)
+        in_blob = DATA_BLOB(len(protected_data), ctypes.cast(in_bytes, ctypes.POINTER(ctypes.c_ubyte)))
         out_blob = DATA_BLOB()
-        if crypt32.CryptUnprotectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+
+        if _CRYPT32.CryptUnprotectData(
+            ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+        ):
             result = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-            ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+            _KERNEL32.LocalFree(out_blob.pbData)
             return result
     except Exception as exc:
         logger.warning("Windows DPAPI unprotect failed: %s", exc)
@@ -49,7 +107,7 @@ def _unprotect_bytes_windows(protected_data: bytes) -> bytes:
 
 
 class CryptoManager:
-    """Manages authenticated AES-256-GCM encryption with OS-protected key storage."""
+    """Manages authenticated AES-256-GCM encryption with 64-bit safe OS-protected key storage."""
 
     def __init__(self, key_storage_dir: Path) -> None:
         self._key_storage_dir = key_storage_dir
@@ -69,7 +127,7 @@ class CryptoManager:
             except Exception as exc:
                 logger.error("Failed to read master key: %s", exc)
 
-        # Generate a new random 256-bit (32 bytes) master key
+        # Generate a stable 256-bit (32 bytes) master key
         logger.info("Generating new 256-bit cryptographic master key...")
         new_key = AESGCM.generate_key(bit_length=256)
         protected = _protect_bytes_windows(new_key) if is_windows else new_key
@@ -111,8 +169,8 @@ class CryptoManager:
         file_path.write_bytes(encrypted_bytes)
 
     def load_encrypted_json(self, file_path: Path) -> dict[str, Any]:
-        """Decrypt file and parse into dictionary. Returns empty dict if missing or invalid."""
-        if not file_path.exists():
+        """Decrypt file and parse into dictionary. Returns empty dict if missing or reset on corruption."""
+        if not file_path.exists() or file_path.stat().st_size == 0:
             return {}
 
         try:
@@ -120,5 +178,9 @@ class CryptoManager:
             decrypted_bytes = self.decrypt(encrypted_bytes)
             return json.loads(decrypted_bytes.decode("utf-8"))
         except Exception as exc:
-            logger.warning("Could not decrypt JSON file %s: %s", file_path, exc)
+            logger.warning("Could not decrypt JSON file %s: %s (resetting stale state)", file_path, exc)
+            try:
+                file_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             return {}

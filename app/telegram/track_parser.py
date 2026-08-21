@@ -1,4 +1,5 @@
 import base64
+from pathlib import Path
 from typing import Any, Callable
 
 from app.models.track import Track
@@ -12,6 +13,7 @@ def parse_message_to_track(
     msg: dict[str, Any],
     request_cover_callback: Callable[[str, int], None] | None = None,
     register_path_callback: Callable[[int, str], None] | None = None,
+    is_liked_checker: Callable[[str, str, str], bool] | None = None,
 ) -> Track | None:
     """Parse messageAudio or messageDocument into an independent domain Track instance with universal file_unique_id."""
     content = msg.get("content", {})
@@ -21,7 +23,7 @@ def parse_message_to_track(
     media_album_id = int(msg.get("media_album_id", 0))
     track_id = f"{chat_id}_{msg_id}"
 
-    is_liked, heart_count = extract_heart_reaction(msg)
+    raw_is_liked, heart_count = extract_heart_reaction(msg)
 
     if content_type == "messageAudio":
         audio = content.get("audio", {})
@@ -30,6 +32,21 @@ def parse_message_to_track(
         file_id = file_obj.get("id", 0)
         file_unique_id = str(file_obj.get("remote", {}).get("unique_id", "")).strip()
         path = local_file.get("path", "")
+
+        title = audio.get("title", "")
+        artist = audio.get("performer", "")
+        duration_seconds = audio.get("duration", 0)
+        size_bytes = file_obj.get("size", 0) or file_obj.get("expected_size", 0)
+        file_name = audio.get("file_name", "")
+
+        # Determine fingerprint for checking local like status
+        clean_title = title.strip().lower() if title.strip() else Path(file_name).stem.lower()
+        clean_artist = artist.strip().lower() if artist.strip() else "unknown artist"
+        fp = f"tg_uid::{file_unique_id}" if file_unique_id else f"meta::{clean_title}::{clean_artist}::{duration_seconds}::{size_bytes}"
+
+        is_liked = raw_is_liked
+        if not is_liked and is_liked_checker:
+            is_liked = is_liked_checker(track_id, fp, file_unique_id)
 
         minithumb = audio.get("album_cover_minithumbnail")
         minithumb_data = (
@@ -58,11 +75,11 @@ def parse_message_to_track(
             chat_id=chat_id,
             message_id=msg_id,
             file_id=file_id,
-            title=audio.get("title", ""),
-            artist=audio.get("performer", ""),
-            duration_seconds=audio.get("duration", 0),
-            size_bytes=file_obj.get("size", 0) or file_obj.get("expected_size", 0),
-            file_name=audio.get("file_name", ""),
+            title=title,
+            artist=artist,
+            duration_seconds=duration_seconds,
+            size_bytes=size_bytes,
+            file_name=file_name,
             mime_type=audio.get("mime_type", "audio/mpeg"),
             local_path=path if local_file.get("is_downloading_completed") else None,
             is_downloaded=local_file.get("is_downloading_completed", False),
@@ -71,7 +88,7 @@ def parse_message_to_track(
             cover_file_id=cover_file_id,
             cover_path=cover_path,
             is_liked=is_liked,
-            heart_count=heart_count,
+            heart_count=heart_count if heart_count > 0 else (1 if is_liked else 0),
             media_album_id=media_album_id,
             file_unique_id=file_unique_id,
         )
@@ -87,6 +104,14 @@ def parse_message_to_track(
             file_id = file_obj.get("id", 0)
             file_unique_id = str(file_obj.get("remote", {}).get("unique_id", "")).strip()
             path = local_file.get("path", "")
+            size_bytes = file_obj.get("size", 0) or file_obj.get("expected_size", 0)
+
+            clean_title = Path(file_name).stem.lower()
+            fp = f"tg_uid::{file_unique_id}" if file_unique_id else f"meta::{clean_title}::audio file::0::{size_bytes}"
+
+            is_liked = raw_is_liked
+            if not is_liked and is_liked_checker:
+                is_liked = is_liked_checker(track_id, fp, file_unique_id)
 
             minithumb = doc.get("minithumbnail")
             minithumb_data = (
@@ -118,7 +143,7 @@ def parse_message_to_track(
                 title=file_name,
                 artist="Audio File",
                 duration_seconds=0,
-                size_bytes=file_obj.get("size", 0) or file_obj.get("expected_size", 0),
+                size_bytes=size_bytes,
                 file_name=file_name,
                 mime_type=mime_type or "audio/mpeg",
                 local_path=path if local_file.get("is_downloading_completed") else None,
@@ -128,7 +153,7 @@ def parse_message_to_track(
                 cover_file_id=cover_file_id,
                 cover_path=cover_path,
                 is_liked=is_liked,
-                heart_count=heart_count,
+                heart_count=heart_count if heart_count > 0 else (1 if is_liked else 0),
                 media_album_id=media_album_id,
                 file_unique_id=file_unique_id,
             )

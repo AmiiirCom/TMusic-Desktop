@@ -395,10 +395,6 @@ class TrackListWidget(QListWidget):
             self.filter_tracks(self._current_query)
 
     def remove_tracks(self, deleted_track_ids: list[str], match_fingerprint: bool = False) -> None:
-        """
-        Safely remove tracks by exact ID or message_id.
-        match_fingerprint is ONLY True when deleting from Favorites view.
-        """
         del_set = {tid for tid in deleted_track_ids if tid}
         if not del_set:
             return
@@ -417,13 +413,11 @@ class TrackListWidget(QListWidget):
                 if t.id in del_set or t.message_id in del_mids
             }
 
-        # Filter internal _all_tracks collection
         self._all_tracks = [
             t for t in self._all_tracks
             if t.id not in del_set and t.message_id not in del_mids and (not match_fingerprint or t.fingerprint not in del_fps)
         ]
 
-        # Safely remove items in reverse order to prevent index-shift glitches
         for i in reversed(range(self.count())):
             item = self.item(i)
             if not item:
@@ -467,7 +461,7 @@ class TrackListWidget(QListWidget):
 
         # 1. Update internal state in _all_tracks
         for idx, t in enumerate(self._all_tracks):
-            if t.id == track_id or t.message_id == message_id:
+            if t.id == track_id or (t.chat_id == chat_id and t.message_id == message_id):
                 self._all_tracks[idx] = Track(
                     id=t.id,
                     chat_id=t.chat_id,
@@ -496,7 +490,7 @@ class TrackListWidget(QListWidget):
         widget = self._track_widgets.get(track_id)
         if not widget:
             for w in self._track_widgets.values():
-                if w.track.message_id == message_id or w.track.id == track_id:
+                if (w.track.chat_id == chat_id and w.track.message_id == message_id) or w.track.id == track_id:
                     widget = w
                     break
 

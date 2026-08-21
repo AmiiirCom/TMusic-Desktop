@@ -29,6 +29,7 @@ class TrackHandler:
         adapter: TDLibAdapter,
         request_cover_download: Callable[[str, int], None],
         register_file_path: Callable[[int, str], None],
+        is_liked_checker: Callable[[str, str, str], bool] | None,
         on_initial_chunk_loaded: Callable[[int, list[Track], bool], None],
         on_lazy_chunk_appended: Callable[[int, list[Track], bool], None],
         on_delta_tracks_prepended: Callable[[int, list[Track]], None],
@@ -39,6 +40,7 @@ class TrackHandler:
         self._adapter = adapter
         self._request_cover_download = request_cover_download
         self._register_file_path = register_file_path
+        self._is_liked_checker = is_liked_checker
         self._on_initial_chunk_loaded = on_initial_chunk_loaded
         self._on_lazy_chunk_appended = on_lazy_chunk_appended
         self._on_delta_tracks_prepended = on_delta_tracks_prepended
@@ -60,13 +62,20 @@ class TrackHandler:
         )
 
     def get_track(self, chat_id: int, message_id: int) -> Track | None:
-        """Lookup an existing track instance in memory."""
         state = self._track_pagination.get(chat_id)
         if state:
             for t in state.tracks:
                 if t.message_id == message_id:
                     return t
         return None
+
+    def set_track_reaction_state(self, chat_id: int, message_id: int, is_liked: bool, count: int = 0) -> None:
+        state = self._track_pagination.get(chat_id)
+        if state:
+            for idx, t in enumerate(state.tracks):
+                if t.message_id == message_id:
+                    state.tracks[idx] = self._copy_track_with_like(t, is_liked, count)
+                    break
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
         if reset or chat_id not in self._track_pagination:
@@ -155,7 +164,13 @@ class TrackHandler:
         if not state:
             return
 
-        track = parse_message_to_track(chat_id, message, self._request_cover_download, self._register_file_path)
+        track = parse_message_to_track(
+            chat_id,
+            message,
+            self._request_cover_download,
+            self._register_file_path,
+            self._is_liked_checker,
+        )
         if not track:
             return
 
@@ -177,20 +192,17 @@ class TrackHandler:
         results: list[Track] = []
         seen_fps: set[str] = set()
         for msg in messages:
-            track = parse_message_to_track(chat_id, msg, self._request_cover_download, self._register_file_path)
+            track = parse_message_to_track(
+                chat_id,
+                msg,
+                self._request_cover_download,
+                self._register_file_path,
+                self._is_liked_checker,
+            )
             if track and track.fingerprint not in seen_fps:
                 seen_fps.add(track.fingerprint)
                 results.append(track)
         return results
-    
-    def set_track_reaction_state(self, chat_id: int, message_id: int, is_liked: bool, count: int = 0) -> None:
-        """Immediately update in-memory pagination cache without network delay."""
-        state = self._track_pagination.get(chat_id)
-        if state:
-            for idx, t in enumerate(state.tracks):
-                if t.message_id == message_id:
-                    state.tracks[idx] = self._copy_track_with_like(t, is_liked, count)
-                    break
 
     @staticmethod
     def _copy_track_with_like(t: Track, is_liked: bool, heart_count: int) -> Track:

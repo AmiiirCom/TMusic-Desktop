@@ -85,11 +85,17 @@ class TDLibAdapter:
             self._tdlib.td_json_client_destroy.restype = None
             self._tdlib.td_json_client_destroy.argtypes = [ctypes.c_void_p]
 
-            self._client = self._tdlib.td_json_client_create()
+            # 1. Silence noisy internal C++ logs statically BEFORE client creation
+            null_ptr = ctypes.c_void_p(0)
+            for query in (
+                {"@type": "setLogVerbosityLevel", "new_verbosity_level": 0},
+                {"@type": "setLogStream", "log_stream": {"@type": "logStreamEmpty"}},
+            ):
+                query_bytes = json.dumps(query).encode("utf-8")
+                self._tdlib.td_json_client_execute(null_ptr, query_bytes)
 
-            # Silence noisy internal C++ logs (Stickers, StickersManager, etc.)
-            self.execute({"@type": "setLogVerbosityLevel", "new_verbosity_level": 0})
-            self.execute({"@type": "setLogStream", "log_stream": {"@type": "logStreamEmpty"}})
+            # 2. Instantiate TDLib JSON client
+            self._client = self._tdlib.td_json_client_create()
             logger.info("TDLib library loaded successfully from %s", self._library_path)
 
         except Exception as exc:

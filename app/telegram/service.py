@@ -66,7 +66,7 @@ class TelegramService(QObject):
         self._worker: TDLibWorker | None = None
         self._current_opened_chat_id = 0
 
-        # State maps for forward-copy & post-send reaction pipeline
+        # State tracking for asynchronous album standalone copies
         self._pending_album_copies: dict[str, tuple[int, int, str]] = {}
         self._pending_reaction_msg_ids: dict[int, tuple[int, int, str]] = {}
 
@@ -111,6 +111,7 @@ class TelegramService(QObject):
             adapter=self._adapter,
             request_cover_download=self._media.download_cover_file,
             register_file_path=self._media.register_completed_path,
+            is_liked_checker=self._is_track_liked,
             on_initial_chunk_loaded=self._on_initial_tracks_loaded,
             on_lazy_chunk_appended=self._on_lazy_tracks_appended,
             on_delta_tracks_prepended=self._on_delta_tracks_prepended,
@@ -193,7 +194,7 @@ class TelegramService(QObject):
     def _open_chat(self, chat_id: int) -> None:
         self._clear_cover_queue()
 
-        if chat_id == FAVORITES_CHAT_ID:
+        if chat_id == FAVORITES_CHAT_ID or chat_id == 0:
             return
 
         if self._current_opened_chat_id == chat_id:
@@ -249,9 +250,14 @@ class TelegramService(QObject):
             self._settings.update_liked_track_cover(track_id, cover_path)
         self.cover_downloaded.emit(track_id, cover_path)
 
+    def _is_track_liked(self, track_id: str, fingerprint: str, file_unique_id: str = "") -> bool:
+        if not self._settings:
+            return False
+        return self._settings.is_track_liked(track_id, fingerprint=fingerprint, file_unique_id=file_unique_id)
+
     def _on_owned_chats_loaded(self, chats: list[OwnedChat]) -> None:
         self.owned_chats_loaded.emit(chats)
-        self.sync_favorites_from_telegram()
+        QTimer.singleShot(1200, self.sync_favorites_from_telegram)
 
     def _start_staggered_covers(self, tracks: list[Track], clear_existing: bool = True) -> None:
         if clear_existing:
@@ -279,46 +285,13 @@ class TelegramService(QObject):
         self._cover_timer.stop()
         self._cover_queue.clear()
 
-    @staticmethod
-    def _clone_track_lightweight(t: Track) -> Track:
-        return Track(
-            id=t.id,
-            chat_id=t.chat_id,
-            message_id=t.message_id,
-            file_id=t.file_id,
-            title=t.title,
-            artist=t.artist,
-            duration_seconds=t.duration_seconds,
-            size_bytes=t.size_bytes,
-            file_name=t.file_name,
-            mime_type=t.mime_type,
-            local_path=t.local_path,
-            is_downloaded=t.is_downloaded,
-            date_timestamp=t.date_timestamp,
-            minithumbnail_data=t.minithumbnail_data,
-            cover_file_id=t.cover_file_id,
-            cover_path=None,
-            is_liked=t.is_liked,
-            heart_count=t.heart_count,
-            media_album_id=t.media_album_id,
-            file_unique_id=t.file_unique_id,
-        )
-
     def sync_favorites_from_telegram(self) -> None:
+        """Fetch and deeply sync liked audio tracks across all owned music chats asynchronously."""
         if not self._adapter.is_loaded:
             return
 
         owned_chats = self._chats.get_all_owned_chats()
         if not owned_chats:
-            self._adapter.send({
-                "@type": "searchMessages",
-                "chat_list": {"@type": "chatListMain"},
-                "query": "",
-                "offset": "",
-                "limit": 100,
-                "filter": {"@type": "searchMessagesFilterAudio"},
-                "@extra": "sync_favorites_global",
-            })
             return
 
         for chat in owned_chats:
@@ -330,7 +303,6 @@ class TelegramService(QObject):
             return
 
         self._adapter.send({"@type": "openChat", "chat_id": chat_id})
-
         self._adapter.send({
             "@type": "searchChatMessages",
             "chat_id": chat_id,
@@ -339,7 +311,7 @@ class TelegramService(QObject):
             "offset": 0,
             "limit": 100,
             "filter": {"@type": "searchMessagesFilterAudio"},
-            "@extra": f"sync_favorites_chat_{chat_id}_{from_message_id}",
+            "@extra": f"sync_fav_search_{chat_id}_{from_message_id}",
         })
 
     def _on_track_reaction_updated(
@@ -385,11 +357,6 @@ class TelegramService(QObject):
                         "message_id": message_id,
                         "@extra": f"fetch_liked_msg_{chat_id}_{message_id}",
                     })
-        else:
-            if self._settings:
-                self._settings.remove_liked_track(track_id)
-            self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track_id])
-
         self.track_reaction_updated.emit(chat_id, message_id, is_liked, heart_count)
 
     def _handle_update(self, update: dict[str, Any]) -> None:
@@ -409,14 +376,14 @@ class TelegramService(QObject):
                         sending_state = new_msg.get("sending_state")
 
                         if sending_state is None:
-                            # Standalone message already sent -> apply reaction immediately
                             self._tracks.toggle_track_like(new_cid, new_mid, current_liked=False)
                             if self._settings:
                                 self._settings.register_album_copied_message(fp, new_mid)
                                 self._settings.register_album_copied_message(f"{cid}_{orig_mid}", new_mid)
                         else:
-                            # Hold in queue until updateMessageSendSucceeded confirms the real permanent ID
                             self._pending_reaction_msg_ids[new_mid] = (new_cid, orig_mid, fp)
+            elif update_type == "error":
+                logger.warning("Failed to forward album copy (%s): %s", extra, update.get("message"))
             return
 
         # 2. Handle successful message delivery confirmation
@@ -430,7 +397,6 @@ class TelegramService(QObject):
             if info:
                 target_cid, orig_mid, fp = info
                 effective_cid = cid or target_cid
-                # Apply reaction on permanent real_mid
                 self._tracks.toggle_track_like(effective_cid, real_mid, current_liked=False)
                 if self._settings:
                     self._settings.register_album_copied_message(fp, real_mid)
@@ -439,18 +405,21 @@ class TelegramService(QObject):
                 self.track_reaction_updated.emit(effective_cid, real_mid, True, 1)
             return
 
-        if isinstance(extra, str) and (extra.startswith("sync_favorites_chat_") or extra == "sync_favorites_global"):
-            if update_type in ("foundChatMessages", "foundMessages", "messages"):
+        # 3. Handle reaction command responses
+        if isinstance(extra, str) and extra.startswith("react_"):
+            if update_type == "error":
+                logger.warning("TDLib reaction request failed (%s): %s", extra, update.get("message"))
+            elif update_type == "ok":
+                logger.debug("TDLib reaction request succeeded for %s", extra)
+            return
+
+        # 4. Handle search results by fetching full messages with reaction details
+        if isinstance(extra, str) and extra.startswith("sync_fav_search_"):
+            if update_type == "foundChatMessages":
                 messages = update.get("messages", [])
                 next_from_id = update.get("next_from_message_id", 0)
-                cid = 0
-                if extra.startswith("sync_favorites_chat_"):
-                    parts = extra.split("_")
-                    if len(parts) >= 4:
-                        try:
-                            cid = int(parts[3])
-                        except ValueError:
-                            cid = 0
+                parts = extra.split("_")
+                cid = int(parts[3]) if len(parts) >= 4 else 0
 
                 msg_ids = [m["id"] for m in messages if isinstance(m, dict) and "id" in m]
                 if msg_ids and cid != 0 and self._adapter.is_loaded:
@@ -460,59 +429,68 @@ class TelegramService(QObject):
                         "message_ids": msg_ids,
                         "force_read": False,
                     })
-
-                has_new_additions = False
-                for msg in messages:
-                    msg_cid = msg.get("chat_id", cid)
-                    track = parse_message_to_track(
-                        msg_cid, msg, request_cover_callback=None, register_path_callback=self._media.register_completed_path
-                    )
-                    if track:
-                        if track.is_liked:
-                            if self._settings:
-                                is_new = self._settings.save_liked_track(track)
-                                if is_new:
-                                    has_new_additions = True
-                        else:
-                            if self._settings and any(lt.id == track.id for lt in self._settings.get_liked_tracks()):
-                                self._settings.remove_liked_track(track.id, fingerprint=track.fingerprint, file_unique_id=track.file_unique_id)
-                                self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track.id])
-
-                if has_new_additions and self._settings:
-                    liked_tracks = self._settings.get_liked_tracks()
-                    light_tracks = [self._clone_track_lightweight(t) for t in liked_tracks]
-                    self.tracks_loaded.emit(FAVORITES_CHAT_ID, light_tracks, False)
-                    self._start_staggered_covers(liked_tracks, clear_existing=True)
+                    self._adapter.send({
+                        "@type": "getMessages",
+                        "chat_id": cid,
+                        "message_ids": msg_ids,
+                        "@extra": f"sync_full_msgs_{cid}",
+                    })
 
                 if next_from_id != 0 and cid != 0:
                     self._fetch_favorites_page(cid, from_message_id=next_from_id)
+            return
+
+        # 5. Process full messages with complete reaction info
+        if isinstance(extra, str) and extra.startswith("sync_full_msgs_"):
+            if update_type == "messages":
+                messages = update.get("messages", [])
+                parts = extra.split("_")
+                cid = int(parts[3]) if len(parts) >= 4 else 0
+                has_new_additions = False
+
+                for msg in messages:
+                    if not msg or not isinstance(msg, dict):
+                        continue
+                    msg_cid = msg.get("chat_id", cid)
+                    is_liked, count = extract_heart_reaction(msg)
+                    if is_liked:
+                        track = parse_message_to_track(
+                            msg_cid,
+                            msg,
+                            request_cover_callback=None,
+                            register_path_callback=self._media.register_completed_path,
+                            is_liked_checker=self._is_track_liked,
+                        )
+                        if track and self._settings:
+                            is_new = self._settings.save_liked_track(track)
+                            if is_new:
+                                has_new_additions = True
+                                self.tracks_prepended.emit(FAVORITES_CHAT_ID, [track])
+                            self.track_reaction_updated.emit(track.chat_id, track.message_id, True, count)
+
+                if has_new_additions and self._settings:
+                    self.load_chat_tracks(FAVORITES_CHAT_ID, reset=True)
             return
 
         if isinstance(extra, str) and extra.startswith("fetch_liked_msg_"):
             if update_type == "message":
                 chat_id = update.get("chat_id", 0)
                 track = parse_message_to_track(
-                    chat_id, update, self._media.download_cover_file, self._media.register_completed_path
+                    chat_id,
+                    update,
+                    self._media.download_cover_file,
+                    self._media.register_completed_path,
+                    self._is_track_liked,
                 )
                 if track:
                     is_liked, count = extract_heart_reaction(update)
-                    if is_liked:
+                    if is_liked or self._is_track_liked(track.id, track.fingerprint, track.file_unique_id):
                         if self._settings:
                             self._settings.save_liked_track(track)
-                        self.track_reaction_updated.emit(track.chat_id, track.message_id, True, count)
+                        self.track_reaction_updated.emit(track.chat_id, track.message_id, True, count or 1)
                         self.tracks_prepended.emit(FAVORITES_CHAT_ID, [track])
                         if track.cover_file_id > 0 and not track.cover_path:
                             self._media.download_cover_file(track.id, track.cover_file_id)
-            return
-
-        if isinstance(extra, str) and extra.startswith("react_") and update_type == "error":
-            parts = extra.split("_")
-            if len(parts) >= 4:
-                try:
-                    err_chat_id, err_msg_id, attempted = int(parts[1]), int(parts[2]), bool(int(parts[3]))
-                    self._tracks.revert_track_reaction(err_chat_id, err_msg_id, not attempted)
-                except Exception:
-                    pass
             return
 
         if extra == "periodic_net_stats" and update_type == "networkStatistics":
@@ -604,7 +582,8 @@ class TelegramService(QObject):
                 info = update.get("interaction_info")
                 self._tracks.process_interaction_info_update(cid, mid, info)
                 is_liked, count = extract_heart_reaction(info)
-                self._on_track_reaction_updated(cid, mid, is_liked, count)
+                if is_liked:
+                    self._on_track_reaction_updated(cid, mid, is_liked, count)
 
             case "updateMessageReactions":
                 cid = update.get("chat_id", 0)
@@ -612,7 +591,8 @@ class TelegramService(QObject):
                 reactions = update.get("reactions")
                 self._tracks.process_reactions_update(cid, mid, reactions)
                 is_liked, count = extract_heart_reaction({"reactions": reactions})
-                self._on_track_reaction_updated(cid, mid, is_liked, count)
+                if is_liked:
+                    self._on_track_reaction_updated(cid, mid, is_liked, count)
 
             case "updateFile":
                 file_obj = update.get("file", {})
@@ -654,7 +634,7 @@ class TelegramService(QObject):
     def _on_auth_ready(self) -> None:
         self.set_online_status(True)
         self._chats.start_chat_sync()
-        self.sync_favorites_from_telegram()
+        QTimer.singleShot(1200, self.sync_favorites_from_telegram)
 
     def _on_auth_closed(self) -> None:
         self._net_timer.stop()
@@ -685,46 +665,11 @@ class TelegramService(QObject):
         self._media.download_cover_file(track_id, file_id)
 
     def toggle_track_like(self, track: Track) -> None:
+        """Toggle like status locally and dispatch reaction or album copy to Telegram."""
         next_liked = not track.is_liked
         next_count = max(0, track.heart_count + (1 if next_liked else -1))
 
         if next_liked:
-            # 1. Album track: Forward-copy single audio without sender name into the same chat
-            if track.media_album_id != 0:
-                updated_track = Track(
-                    id=track.id,
-                    chat_id=track.chat_id,
-                    message_id=track.message_id,
-                    file_id=track.file_id,
-                    title=track.title,
-                    artist=track.artist,
-                    duration_seconds=track.duration_seconds,
-                    size_bytes=track.size_bytes,
-                    file_name=track.file_name,
-                    mime_type=track.mime_type,
-                    local_path=track.local_path,
-                    is_downloaded=track.is_downloaded,
-                    date_timestamp=track.date_timestamp,
-                    minithumbnail_data=track.minithumbnail_data,
-                    cover_file_id=track.cover_file_id,
-                    cover_path=track.cover_path,
-                    is_liked=True,
-                    heart_count=next_count,
-                    media_album_id=track.media_album_id,
-                    file_unique_id=track.file_unique_id,
-                )
-                if self._settings:
-                    self._settings.save_liked_track(updated_track)
-                self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
-                self.track_reaction_updated.emit(track.chat_id, track.message_id, True, next_count)
-
-                # Send standalone copy in same chat
-                req_extra = f"copy_like_{track.chat_id}_{track.message_id}_{int(time.time() * 1000)}"
-                self._pending_album_copies[req_extra] = (track.chat_id, track.message_id, track.fingerprint)
-                self._tracks.forward_copy_and_like(track.chat_id, track.message_id, req_extra)
-                return
-
-            # 2. Standalone regular track
             updated_track = Track(
                 id=track.id,
                 chat_id=track.chat_id,
@@ -744,146 +689,35 @@ class TelegramService(QObject):
                 cover_path=track.cover_path,
                 is_liked=True,
                 heart_count=next_count,
-                media_album_id=0,
+                media_album_id=track.media_album_id,
                 file_unique_id=track.file_unique_id,
             )
+
+            # 1. Update in-memory settings & indexes immediately
             if self._settings:
                 self._settings.save_liked_track(updated_track)
-            self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
 
+            # 2. Update TrackHandler cached state
+            self._tracks.set_track_reaction_state(track.chat_id, track.message_id, is_liked=True, count=next_count)
+
+            # 3. Emit signals to UI immediately
+            self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
+            self.track_reaction_updated.emit(track.chat_id, track.message_id, True, next_count)
+
+            # 4. Request cover if missing
             if updated_track.cover_file_id > 0 and not updated_track.cover_path:
                 self._media.download_cover_file(updated_track.id, updated_track.cover_file_id)
 
-            if track.chat_id != FAVORITES_CHAT_ID:
-                self._open_chat(track.chat_id)
-            self.track_reaction_updated.emit(track.chat_id, track.message_id, True, next_count)
-            self._tracks.toggle_track_like(track.chat_id, track.message_id, False)
-
-        else:
-            # 3. Unliking: Check if this track was an album track that was copied
-            copied_mid = None
-            if self._settings:
-                copied_mid = (
-                    self._settings.get_album_copied_message_id(track.fingerprint)
-                    or self._settings.get_album_copied_message_id(track.id)
-                    or self._settings.get_album_copied_message_id(f"{track.chat_id}_{track.message_id}")
-                )
-
-            if copied_mid:
-                # Delete standalone copied message from Telegram permanently
-                if self._adapter.is_loaded:
-                    self._adapter.send({
-                        "@type": "deleteMessages",
-                        "chat_id": track.chat_id,
-                        "message_ids": [copied_mid],
-                        "revoke": True,
-                    })
-                if self._settings:
-                    self._settings.remove_album_copied_message(track.fingerprint)
-                    self._settings.remove_album_copied_message(track.id)
-                    self._settings.remove_album_copied_message(f"{track.chat_id}_{copied_mid}")
+            # 5. Dispatch Telegram action (Album track copy or direct reaction)
+            if track.media_album_id != 0:
+                req_extra = f"copy_like_{track.chat_id}_{track.message_id}_{int(time.time() * 1000)}"
+                self._pending_album_copies[req_extra] = (track.chat_id, track.message_id, track.fingerprint)
+                self._tracks.forward_copy_and_like(track.chat_id, track.message_id, req_extra)
             else:
-                # Regular track: remove reaction
-                self._tracks.toggle_track_like(track.chat_id, track.message_id, True)
-
-            # Update in-memory pagination cache immediately
-            self._tracks.set_track_reaction_state(track.chat_id, track.message_id, is_liked=False, count=0)
-            if copied_mid:
-                self._tracks.set_track_reaction_state(track.chat_id, copied_mid, is_liked=False, count=0)
-
-            # Remove from favorites in settings
-            if self._settings:
-                self._settings.remove_liked_track(track.id, fingerprint=track.fingerprint, file_unique_id=track.file_unique_id)
-                if copied_mid:
-                    self._settings.remove_liked_track(f"{track.chat_id}_{copied_mid}", fingerprint=track.fingerprint, file_unique_id=track.file_unique_id)
-
-            # Remove from Favorites view immediately
-            self.tracks_deleted.emit(FAVORITES_CHAT_ID, [track.id, f"{track.chat_id}_{copied_mid}" if copied_mid else ""])
-
-            # In normal channel view: remove standalone copy message if present (exact match)
-            if copied_mid:
-                self.tracks_deleted.emit(track.chat_id, [f"{track.chat_id}_{copied_mid}"])
-
-            # Immediately update the heart icon on the album track in the channel list and player bar
-            self.track_reaction_updated.emit(track.chat_id, track.message_id, False, 0)
-            if copied_mid:
-                self.track_reaction_updated.emit(track.chat_id, copied_mid, False, 0)
-        next_liked = not track.is_liked
-        next_count = max(0, track.heart_count + (1 if next_liked else -1))
-
-        if next_liked:
-            # 1. Album track: Forward-copy as a single standalone track into the same chat
-            if track.media_album_id != 0:
-                updated_track = Track(
-                    id=track.id,
-                    chat_id=track.chat_id,
-                    message_id=track.message_id,
-                    file_id=track.file_id,
-                    title=track.title,
-                    artist=track.artist,
-                    duration_seconds=track.duration_seconds,
-                    size_bytes=track.size_bytes,
-                    file_name=track.file_name,
-                    mime_type=track.mime_type,
-                    local_path=track.local_path,
-                    is_downloaded=track.is_downloaded,
-                    date_timestamp=track.date_timestamp,
-                    minithumbnail_data=track.minithumbnail_data,
-                    cover_file_id=track.cover_file_id,
-                    cover_path=track.cover_path,
-                    is_liked=True,
-                    heart_count=next_count,
-                    media_album_id=track.media_album_id,
-                    file_unique_id=track.file_unique_id,
-                )
-                if self._settings:
-                    self._settings.save_liked_track(updated_track)
-                self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
-                self.track_reaction_updated.emit(track.chat_id, track.message_id, True, next_count)
-
-                # Send standalone copy in same chat
-                req_extra = f"copy_like_{track.chat_id}_{track.message_id}_{int(time.time() * 1000)}"
-                self._pending_album_copies[req_extra] = (track.chat_id, track.message_id, track.fingerprint)
-                self._tracks.forward_copy_and_like(track.chat_id, track.message_id, req_extra)
-                return
-
-            # 2. Standalone regular track
-            updated_track = Track(
-                id=track.id,
-                chat_id=track.chat_id,
-                message_id=track.message_id,
-                file_id=track.file_id,
-                title=track.title,
-                artist=track.artist,
-                duration_seconds=track.duration_seconds,
-                size_bytes=track.size_bytes,
-                file_name=track.file_name,
-                mime_type=track.mime_type,
-                local_path=track.local_path,
-                is_downloaded=track.is_downloaded,
-                date_timestamp=track.date_timestamp,
-                minithumbnail_data=track.minithumbnail_data,
-                cover_file_id=track.cover_file_id,
-                cover_path=track.cover_path,
-                is_liked=True,
-                heart_count=next_count,
-                media_album_id=0,
-                file_unique_id=track.file_unique_id,
-            )
-            if self._settings:
-                self._settings.save_liked_track(updated_track)
-            self.tracks_prepended.emit(FAVORITES_CHAT_ID, [updated_track])
-
-            if updated_track.cover_file_id > 0 and not updated_track.cover_path:
-                self._media.download_cover_file(updated_track.id, updated_track.cover_file_id)
-
-            if track.chat_id != FAVORITES_CHAT_ID:
-                self._open_chat(track.chat_id)
-            self.track_reaction_updated.emit(track.chat_id, track.message_id, True, next_count)
-            self._tracks.toggle_track_like(track.chat_id, track.message_id, False)
+                if track.chat_id != FAVORITES_CHAT_ID and track.chat_id != 0 and track.message_id != 0:
+                    self._tracks.toggle_track_like(track.chat_id, track.message_id, current_liked=False)
 
         else:
-            # 3. Unliking: Check if this track was an album track that was copied
             copied_mid = None
             if self._settings:
                 copied_mid = (
@@ -891,11 +725,38 @@ class TelegramService(QObject):
                     or self._settings.get_album_copied_message_id(track.id)
                     or self._settings.get_album_copied_message_id(f"{track.chat_id}_{track.message_id}")
                 )
+                self._settings.remove_liked_track(
+                    track.id,
+                    fingerprint=track.fingerprint,
+                    file_unique_id=track.file_unique_id,
+                )
+                if copied_mid:
+                    self._settings.remove_liked_track(
+                        f"{track.chat_id}_{copied_mid}",
+                        fingerprint=track.fingerprint,
+                        file_unique_id=track.file_unique_id,
+                    )
 
             deleted_ids = [track.id]
             if copied_mid:
                 deleted_ids.append(f"{track.chat_id}_{copied_mid}")
-                # Delete standalone copied message permanently from Telegram
+
+            # 1. Update TrackHandler cached state
+            self._tracks.set_track_reaction_state(track.chat_id, track.message_id, is_liked=False, count=0)
+            if copied_mid:
+                self._tracks.set_track_reaction_state(track.chat_id, copied_mid, is_liked=False, count=0)
+
+            # 2. Emit UI deletion & reaction update signals immediately
+            self.tracks_deleted.emit(FAVORITES_CHAT_ID, deleted_ids)
+            if copied_mid:
+                self.tracks_deleted.emit(track.chat_id, [f"{track.chat_id}_{copied_mid}"])
+
+            self.track_reaction_updated.emit(track.chat_id, track.message_id, False, 0)
+            if copied_mid:
+                self.track_reaction_updated.emit(track.chat_id, copied_mid, False, 0)
+
+            # 3. Dispatch TDLib deletion or direct reaction removal
+            if copied_mid:
                 if self._adapter.is_loaded:
                     self._adapter.send({
                         "@type": "deleteMessages",
@@ -908,32 +769,42 @@ class TelegramService(QObject):
                     self._settings.remove_album_copied_message(track.id)
                     self._settings.remove_album_copied_message(f"{track.chat_id}_{copied_mid}")
             else:
-                # Regular track: remove reaction
-                self._tracks.toggle_track_like(track.chat_id, track.message_id, True)
-
-            # Remove from favorites settings
-            if self._settings:
-                self._settings.remove_liked_track(track.id, fingerprint=track.fingerprint, file_unique_id=track.file_unique_id)
-
-            # Immediately emit deletion signal for Favorites list
-            self.tracks_deleted.emit(FAVORITES_CHAT_ID, deleted_ids)
-
-            # If a copied standalone message existed in normal chat list, remove it
-            if copied_mid:
-                self.tracks_deleted.emit(track.chat_id, [f"{track.chat_id}_{copied_mid}"])
-
-            # Immediately update the heart icon on the album track & player bar
-            self.track_reaction_updated.emit(track.chat_id, track.message_id, False, next_count)
-            if copied_mid:
-                self.track_reaction_updated.emit(track.chat_id, copied_mid, False, 0)
+                if track.chat_id != FAVORITES_CHAT_ID and track.chat_id != 0 and track.message_id != 0:
+                    self._tracks.toggle_track_like(track.chat_id, track.message_id, current_liked=True)
 
     def load_chat_tracks(self, chat_id: int, reset: bool = True, chunk_size: int = 40) -> None:
         if chat_id == FAVORITES_CHAT_ID:
             liked_tracks = self._settings.get_liked_tracks() if self._settings else []
-            light_tracks = [self._clone_track_lightweight(t) for t in liked_tracks]
-            self.tracks_loaded.emit(FAVORITES_CHAT_ID, light_tracks, False)
-            self._start_staggered_covers(liked_tracks, clear_existing=True)
-            self.sync_favorites_from_telegram()
+            processed_tracks: list[Track] = []
+            for t in liked_tracks:
+                valid_cover = t.cover_path if (t.cover_path and Path(t.cover_path).exists()) else None
+                processed_tracks.append(
+                    Track(
+                        id=t.id,
+                        chat_id=t.chat_id,
+                        message_id=t.message_id,
+                        file_id=t.file_id,
+                        title=t.title,
+                        artist=t.artist,
+                        duration_seconds=t.duration_seconds,
+                        size_bytes=t.size_bytes,
+                        file_name=t.file_name,
+                        mime_type=t.mime_type,
+                        local_path=t.local_path,
+                        is_downloaded=t.is_downloaded,
+                        date_timestamp=t.date_timestamp,
+                        minithumbnail_data=t.minithumbnail_data,
+                        cover_file_id=t.cover_file_id,
+                        cover_path=valid_cover,
+                        is_liked=True,
+                        heart_count=t.heart_count,
+                        media_album_id=t.media_album_id,
+                        file_unique_id=t.file_unique_id,
+                    )
+                )
+
+            self.tracks_loaded.emit(FAVORITES_CHAT_ID, processed_tracks, False)
+            self._start_staggered_covers(processed_tracks, clear_existing=True)
             return
 
         if reset:
